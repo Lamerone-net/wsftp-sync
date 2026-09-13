@@ -6,7 +6,7 @@ const path = require('node:path');
 const { parseConfig, safeRelative, remoteFile, excluded, plan } = require('../dist/core');
 const { scanLocal, scanRemote, download, planSync, crc32File } = require('../dist/files');
 const { inspectRemote } = require('../dist/transport');
-const base = { protocol: 'sftp', host: 'localhost', username: 'test', remotePath: '/www' };
+const base = { protocol: 'sftp', host: 'localhost', username: 'test', remote_path: '/www' };
 
 test('directory remote scan preserves relative paths and never scans sibling directories', async () => {
   const c = parseConfig(base);
@@ -27,7 +27,7 @@ test('configuration defaults, protocols and strict validation', () => {
   assert.equal(parseConfig(base).port, 22);
   assert.equal(parseConfig({...base,protocol:'ftps'}).port,21);
   assert.equal(parseConfig(base).uploadOnSave,false);
-  for (const patch of [{password:123},{port:0},{port:22.5},{timeout:0},{uploadOnSave:'yes'},{exclude:[1]},{remotePath:'/www/../etc'},{protocol:'http'},{host:'x\r\nUSER root'},{hostKeySha256:'wrong'}]) assert.throws(() => parseConfig({...base,...patch}));
+  for (const patch of [{password:123},{port:0},{port:22.5},{timeout:0},{uploadOnSave:'yes'},{exclude:[1]},{remote_path:'/www/../etc'},{protocol:'http'},{host:'x\r\nUSER root'},{hostKeySha256:'wrong'}]) assert.throws(() => parseConfig({...base,...patch}));
 });
 test('path traversal, Windows special names and control characters are rejected', () => {
   for (const value of ['../x','/etc/passwd','a/../b','C:/x','a\\b','a//b','a\nfile','a:stream','a/NUL.txt','a/trailing.']) assert.throws(() => safeRelative(value));

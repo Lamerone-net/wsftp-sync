@@ -27,7 +27,7 @@ export async function discoverProtocol(c: Config, password: string, verify: (has
         return trusted;
       },log,verifyTLS);
       check();
-      await transport.list(c.remotePath);
+      await transport.list(c.remote_path);
       check();
       log(`Discovery succeeded: ${label}`);
       return candidate;

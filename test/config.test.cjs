@@ -5,7 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { readConfig, findConfig, parseConnectionConfig } = require('../dist/config');
 const { UserError, excluded } = require('../dist/core');
-const base = { protocol: 'ftp', host: 'localhost', username: 'test', password: 'test', remotePath: '/' };
+const base = { protocol: 'ftp', host: 'localhost', username: 'test', password: 'test', remote_path: '/' };
 
 test('direction exclusions are additive, prune descendants and do not affect the opposite direction', () => {
   const { forDirection } = require('../dist/core');
@@ -175,4 +175,32 @@ test('template is copied only into existing .vscode and never overwrites config'
     await ensureConfig(root,template);
     assert.equal(await fs.readFile(file,'utf8'),'preserve existing content');
   } finally { await fs.rm(root,{recursive:true,force:true}); }
+});
+
+
+test('autosync accepts booleans and preserves omission for legacy settings fallback', () => {
+  const { parseConfig } = require('../dist/core');
+  const config = {protocol:'ftps',host:'example',username:'user',remote_path:'/'};
+  assert.equal(parseConfig(config).autosync,undefined);
+  for (const value of [true,false]) assert.equal(parseConfig({...config,autosync:value}).autosync,value);
+  for (const value of ['true','false',1,0,null,{},[]]) assert.throws(() => parseConfig({...config,autosync:value}),/autosync must be a boolean/);
+});
+
+
+test('autosync_secs defaults to two minutes and accepts only positive bounded integer seconds', () => {
+  const { parseConfig } = require('../dist/core');
+  const config = {protocol:'ftps',host:'example',username:'user',remote_path:'/'};
+  assert.equal(parseConfig(config).autosync_secs,120);
+  for (const value of [1,3,120,86400]) assert.equal(parseConfig({...config,autosync_secs:value}).autosync_secs,value);
+  for (const value of [0,-1,1.5,86401,'120',null,true,{},[]]) assert.throws(() => parseConfig({...config,autosync_secs:value}),/autosync_secs must be an integer/);
+});
+
+
+test('remote_path replaces remotePath and preserves path validation', () => {
+  const { parseConfig } = require('../dist/core');
+  const config = {protocol:'ftps',host:'example',username:'user',remote_path:'/site//assets/'};
+  assert.equal(parseConfig(config).remote_path,'/site/assets/');
+  assert.throws(() => parseConfig({...config,remotePath:'/legacy'}),/invalid option remotePath/);
+  for (const value of ['relative','/site/../other',123,null]) assert.throws(() => parseConfig({...config,remote_path:value}),/remote_path/);
+  assert.equal(parseConfig({host:'example',username:'user',discover:true,port:21}).remote_path,'/');
 });

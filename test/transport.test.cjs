@@ -23,7 +23,7 @@ test('FTP and explicit FTPS round trips; untrusted TLS certificate rejected', {t
   try {
     await server.listen();
     const port = server.server.address().port;
-    const c = parseConfig({protocol:'ftp',host:'127.0.0.1',port,username:'test',remotePath:'/'});
+    const c = parseConfig({protocol:'ftp',host:'127.0.0.1',port,username:'test',remote_path:'/'});
     const input = path.join(root,'input.txt');
     await fs.writeFile(input,'WSFTP round trip\n');
     const diagnostics = [];
@@ -33,6 +33,10 @@ test('FTP and explicit FTPS round trips; untrusted TLS certificate rejected', {t
       assert.ok((await t.list('/nested')).some(e => e.name === 'remote.txt' && e.size === 17));
       await t.download('/nested/remote.txt',path.join(root,'output.txt'));
       assert.equal(await fs.readFile(path.join(root,'output.txt'),'utf8'),'WSFTP round trip\n');
+      await assert.rejects(t.remove('/nested',true));
+      await t.remove('/nested/remote.txt',false); await t.remove('/nested',true);
+      await t.mkdir('/empty'); await t.remove('/empty',true);
+      assert.ok(!(await t.list('/')).some(e => e.name === 'nested' || e.name === 'empty'));
     } finally { await t.close(); }
     assert.ok(diagnostics.some(line => line.includes('> USER')));
     assert.ok(diagnostics.some(line => line.includes('> STOR')));
@@ -65,7 +69,7 @@ test('FTP and explicit FTPS round trips; untrusted TLS certificate rejected', {t
         assert.equal(await fs.readFile(path.join(root,'trusted-output.txt'),'utf8'),'WSFTP round trip\n');
       } finally { await trusted.close(); }
     }
-    const legacy = require('../dist/config').parseConnectionConfig({protocol:'ftps',host:'127.0.0.1',port,username:'test',password:'test',remotePath:'/',passive:true});
+    const legacy = require('../dist/config').parseConnectionConfig({protocol:'ftps',host:'127.0.0.1',port,username:'test',password:'test',remote_path:'/',passive:true});
     const tlsDiagnostics = [];
     const legacyTransport = await connect({...legacy,debug:true,rejectUnauthorized:false},legacy.password,async () => true,message => tlsDiagnostics.push(message));
     try { await legacyTransport.upload(input,'/legacy/file.txt'); }
@@ -84,6 +88,10 @@ test('FTP and explicit FTPS round trips; untrusted TLS certificate rejected', {t
         await active.download(`/active-${protocol}/file.txt`,destination);
         assert.equal(await fs.readFile(destination,'utf8'),'WSFTP round trip\n');
         await assert.rejects(active.download('/missing.txt',path.join(root,'missing-output')));
+        await assert.rejects(active.remove(`/active-${protocol}`,true));
+        await active.remove(`/active-${protocol}/file.txt`,false);
+        await active.remove(`/active-${protocol}`,true);
+        await active.mkdir('/empty-active'); await active.remove('/empty-active',true);
       } finally { await active.close(); }
       assert.ok(activeLogs.some(line => line.startsWith('> PORT ')));
       assert.ok(!activeLogs.some(line => /^> (EPSV|PASV)/.test(line)));
@@ -116,6 +124,11 @@ test('SFTP round trip, password authentication and host key rejection', {timeout
       s.on('REALPATH',(req,p) => s.name(req,[{filename:p === '.' ? '/' : p,longname:p,attrs:attrs(p)}]));
       const stat = (req,p) => files.has(p) || directories.has(p) ? s.attrs(req,attrs(p)) : s.status(req,S.NO_SUCH_FILE);
       s.on('STAT',stat); s.on('LSTAT',stat);
+      s.on('REMOVE',(req,p) => s.status(req,files.delete(p) ? S.OK : S.NO_SUCH_FILE));
+      s.on('RMDIR',(req,p) => {
+        if ([...files.keys(),...directories].some(child => child.startsWith(p+'/'))) return s.status(req,S.FAILURE);
+        s.status(req,directories.delete(p) ? S.OK : S.NO_SUCH_FILE);
+      });
       s.on('MKDIR',(req,p) => {directories.add(p);s.status(req,S.OK);});
       s.on('OPEN',(req,p,flags) => {if (flags & utils.sftp.OPEN_MODE.WRITE) files.set(p,Buffer.alloc(0)); if(!files.has(p)) return s.status(req,S.NO_SUCH_FILE);handle(req,p);});
       s.on('WRITE',(req,h,offset,data) => {const p=handles.get(h.readUInt32BE()).p;const old=files.get(p);const next=Buffer.alloc(Math.max(old.length,offset+data.length));old.copy(next);data.copy(next,offset);files.set(p,next);s.status(req,S.OK);});
@@ -128,7 +141,7 @@ test('SFTP round trip, password authentication and host key rejection', {timeout
   });
   try {
     await new Promise(resolve => server.listen(0,'127.0.0.1',resolve));
-    const c = parseConfig({protocol:'sftp',host:'127.0.0.1',port:server.address().port,username:'test',remotePath:'/'});
+    const c = parseConfig({protocol:'sftp',host:'127.0.0.1',port:server.address().port,username:'test',remote_path:'/'});
     await assert.rejects(connect(c,'test',async () => false));
     testContext.diagnostic('host rejection passed');
     await assert.rejects(connect(c,'wrong',async () => true));
@@ -145,6 +158,10 @@ test('SFTP round trip, password authentication and host key rejection', {timeout
       assert.ok((await t.list('/nested')).some(e => e.name === 'file.txt' && e.size === 9));
       const output = path.join(root,'output.txt'); await t.download('/nested/file.txt',output);
       assert.equal(await fs.readFile(output,'utf8'),'SFTP data');
+      await assert.rejects(t.remove('/nested',true));
+      await t.remove('/nested/file.txt',false); await t.remove('/nested',true);
+      await t.mkdir('/empty'); await t.remove('/empty',true);
+      assert.ok(!directories.has('/nested') && !directories.has('/empty'));
     } finally {await t.close();}
     assert.ok(diagnostics.some(line => line.includes('SFTP')));
     assert.ok(diagnostics.some(line => line.includes('Outbound:')));

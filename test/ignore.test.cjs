@@ -2,7 +2,7 @@ const { test, before } = require('node:test');
 const assert = require('node:assert/strict');
 const { initializeRegex, disposeRegex } = require('../dist/ignore');
 const { parseConfig, forDirection, excluded } = require('../dist/core');
-const base = {protocol:'ftp',host:'localhost',username:'test',password:'test',remotePath:'/'};
+const base = {protocol:'ftp',host:'localhost',username:'test',password:'test',remote_path:'/'};
 before(initializeRegex);
 
 test('PCRE2 supports Perl features, flags and mixed glob rules', () => {

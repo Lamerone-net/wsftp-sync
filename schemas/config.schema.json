@@ -31,7 +31,7 @@
       "type": "string",
       "minLength": 1
     },
-    "remotePath": {
+    "remote_path": {
       "type": "string",
       "pattern": "^/",
       "description": "Absolute path to an existing directory on the server."
@@ -89,6 +89,18 @@
       "type": "boolean",
       "default": false,
       "description": "Discover protocol and data mode on the configured port without transferring files. On success, automatically update protocol/passive and set discover to false in the configuration, then show a confirmation."
+    },
+    "autosync": {
+      "type": "boolean",
+      "default": false,
+      "description": "Enable periodic bidirectional checks and notifications. Transfers still require Apply in the preview. Overrides the VS Code autoCheck.enabled setting when present."
+    },
+    "autosync_secs": {
+      "type": "integer",
+      "default": 120,
+      "minimum": 1,
+      "maximum": 86400,
+      "description": "Seconds to wait after an automatic check finishes before starting the next one. Defaults to 120 (two minutes). Checks never overlap."
     }
   },
   "allOf": [
@@ -111,7 +123,7 @@
       "else": {
         "required": [
           "protocol",
-          "remotePath"
+          "remote_path"
         ]
       }
     }

@@ -3,6 +3,9 @@ import * as fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { Config, excluded, remoteFile, safeRelative, UserError, forDirection } from './core';
+import { SyncCache } from './cache';
+import { ChangeMonitor, CheckLoop } from './monitor';
+import { SyncMode, rulesForMode, scanTrees, buildSyncPlan, validateSnapshot, applySyncAction } from './sync';
 import { disposeRegex } from './ignore';
 import { discoverProtocol } from './discovery';
 import { findConfig, readConfig, applyDiscovery, ensureConfig, InactiveConfig } from './config';
@@ -16,6 +19,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     log.appendLine(line);
   };
   const queues = new Map<string, Promise<void>>();
+  const monitors = new Map<string, { monitor: ChangeMonitor; status: vscode.StatusBarItem; due: number; generation: number; signature?: string }>();
+  let disposed = false;
+  const autosyncOverrides = new Map<string, boolean>();
+  let settingsRevision = 0;
+  const autosyncIntervals = new Map<string, number>();
   let transferStatus: vscode.Disposable | undefined;
   context.subscriptions.push({dispose:disposeRegex},log, { dispose: () => transferStatus?.dispose() });
   function showTransferStatus(direction: 'upload' | 'download', detail: string): void {
@@ -31,6 +39,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     void vscode.window.showErrorMessage(`WSFTP: ${message}`);
   }
   const key = (root: vscode.WorkspaceFolder, c: Config) => 'credential:' + createHash('sha256').update(JSON.stringify([root.uri.toString(),c.protocol,c.host,c.port,c.username,c.privateKeyPath ?? ''])).digest('hex');
+  async function cacheFor(root: vscode.WorkspaceFolder, c: Config): Promise<SyncCache> {
+    const cache = new SyncCache(context.globalStorageUri ? SyncCache.filename(context.globalStorageUri.fsPath,root.uri.fsPath,c) : undefined);
+    await cache.load();
+    return cache;
+  }
+  async function saveCache(cache: SyncCache): Promise<void> {
+    try { await cache.save(); } catch { writeLog('Unable to save synchronization cache; the next scan may repeat content verification.'); }
+  }
   async function folder(uri?: vscode.Uri): Promise<vscode.WorkspaceFolder | undefined> {
     if (!vscode.workspace.isTrusted) throw new Error('A trusted workspace is required.');
     const selected = uri && vscode.workspace.getWorkspaceFolder(uri);
@@ -44,9 +60,25 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const c = await readConfig(root.uri.fsPath);
     return c;
   }
-  function run(root: vscode.WorkspaceFolder, action: () => Promise<void>): Promise<void> {
+  function run(root: vscode.WorkspaceFolder, action: () => Promise<void>, background = false): Promise<void> {
     const id = root.uri.toString();
-    const pending = (queues.get(id) ?? Promise.resolve()).then(action).catch(report);
+    const state = monitors.get(id);
+    if (state && !background) {
+      state.generation++;
+      state.due = Date.now()+1000;
+      state.status.text = '$(sync) WSFTP: waiting for next check';
+      state.status.tooltip = 'The previous check is stale. Click to open a fresh bidirectional preview.';
+    }
+    const pending = (queues.get(id) ?? Promise.resolve()).then(action).catch(background ? error => {
+      if (state) {
+        state.monitor.failed();
+        if (monitors.get(id) === state && !(error instanceof vscode.CancellationError)) {
+          state.status.text = '$(warning) WSFTP: check unavailable';
+          state.status.tooltip = 'Automatic check failed or needs connection setup. Run a manual synchronization; see WSFTP logs.';
+        }
+      }
+      if (!(error instanceof vscode.CancellationError)) writeLog(error instanceof UserError ? error.message : 'Automatic check unavailable. Check connection and configuration using a manual synchronization.');
+    } : report);
     queues.set(id,pending);
     void pending.then(() => { if (queues.get(id) === pending) queues.delete(id); });
     return pending;
@@ -104,7 +136,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   }
   async function session(root: vscode.WorkspaceFolder, c: Config, action: (t: Transport, sessionLog: (message: string) => void) => Promise<void>, interactive = true): Promise<void> {
     if (!vscode.workspace.isTrusted) throw new Error('Workspace is not trusted.');
-    if (c.discover) { await discover(root,c); return; }
+    if (c.discover) { if (!interactive) throw new UserError('Automatic check skipped: complete protocol discovery manually first.'); await discover(root,c); return; }
     let secret = await context.secrets.get(key(root,c)) ?? (c.privateKeyPath ? c.passphrase : c.password);
     if (!secret && !c.privateKeyPath) {
       if (!interactive) throw new UserError('Automatic upload skipped: save the password using WSFTP: Set credential.');
@@ -130,7 +162,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       try { const result = await action(); trace(`${label}: completed`); return result; }
       catch (error) { trace(`${label}: ERROR - ${error instanceof Error ? error.message : String(error)}`); throw error; }
     }
-    const connected = await operation(`Connection; user=${c.username}; remote directory=${c.remotePath}; timeout=${c.timeout} ms`, () => connect(c,secret,async hash => {
+    const connected = await operation(`Connection; user=${c.username}; remote directory=${c.remote_path}; timeout=${c.timeout} ms`, () => connect(c,secret,async hash => {
       if (c.hostKeySha256) return hash.toLowerCase() === c.hostKeySha256.toLowerCase();
       const hostKey = `host:${c.host}:${c.port}`;
       const trusted = context.globalState.get<string>(hostKey);
@@ -148,6 +180,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }),
       upload: (local,remote) => operation(`Upload ${local} -> ${remote}`, () => connected.upload(local,remote)),
       download: (remote,local) => operation(`Download ${remote} -> ${local}`, () => connected.download(remote,local)),
+      mkdir: remote => operation(`Create remote directory ${remote}`, () => connected.mkdir(remote)),
+      remove: (remote,directory) => operation(`Delete remote ${directory ? 'directory' : 'file'} ${remote}`, () => connected.remove(remote,directory)),
       close: () => operation('Disconnect', () => connected.close())
     };
     try { await operation('Operation', () => action(t,trace)); } finally { await t.close(); }
@@ -174,6 +208,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         const remote = await inspectRemote(t,c,relative);
         writeLog(`${relative}: ${remote ? 'remote file exists' : 'remote file is missing'}`);
         if (direction === 'download' && !remote) throw new Error('Remote file is missing.');
+        const cache = await cacheFor(root,c);
+        cache.forget(relative);
+        await cache.save();
         if (direction === 'upload') await t.upload(local,remoteFile(c,relative));
         else await download(t,c,root.uri.fsPath,relative);
         writeLog(`${direction} completed: ${relative}`);
@@ -190,6 +227,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }));
   }
   command('wsftp.log',() => log.show());
+  command('wsftp.clearCache',async () => {
+    const root = await folder(); if (!root) return;
+    await run(root,async () => {
+      const c = await config(root);
+      const cache = await cacheFor(root,c);
+      cache.clearHashes();
+      await cache.save();
+      void vscode.window.showInformationMessage('WSFTP: cache cleared. The next synchronization will verify file contents again.');
+    });
+  });
   command('wsftp.configure',async () => {
     const root = await folder(); if (!root) return;
     const file = await findConfig(root.uri.fsPath) ?? path.join(root.uri.fsPath,'.vscode','wsftp-sync.json');
@@ -207,6 +254,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   command('wsftp.forget',async () => { const root = await folder(); if (root) { await context.secrets.delete(key(root,await config(root))); void vscode.window.showInformationMessage('WSFTP: credential removed.'); } });
   command('wsftp.upload',(uri?: vscode.Uri) => transfer(uri,'upload'));
   command('wsftp.download',(uri?: vscode.Uri) => transfer(uri,'download'));
+  command('wsftp.mirrorLocal',() => synchronizeMode('local'));
+  command('wsftp.mirrorRemote',() => synchronizeMode('remote'));
+  command('wsftp.syncUploadRoot',() => synchronizeMode('local',undefined,true));
+  command('wsftp.syncDownloadRoot',() => synchronizeMode('remote',undefined,true));
+  command('wsftp.bidirectional',() => synchronizeMode('both'));
   command('wsftp.uploadRoot',() => synchronize('upload'));
   command('wsftp.downloadRoot',() => synchronize('download'));
   command('wsftp.uploadDir',(uri?: vscode.Uri) => synchronize('upload',uri,true));
@@ -238,7 +290,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           writeLog(`Local scan completed: ${local.size} files`);
           const remote = await scanRemote(t,c,check,scope);
           writeLog(`Remote scan completed: ${remote.size} files; comparing size and CRC32`);
-          const changes = await planSync(t,c,root.uri.fsPath,local,remote,direction,check,writeLog);
+          const cache = await cacheFor(root,c);
+          cache.prune(local,remote,c,scope);
+          const changes = await planSync(t,c,root.uri.fsPath,local,remote,direction,check,writeLog,cache);
+          await saveCache(cache);
           writeLog(`Comparison completed: ${changes.length} files to transfer`);
           const changed = new Map(changes.map(change => [change.relative,change.reason]));
           for (const relative of (direction === 'upload' ? local : remote).keys()) writeLog(`${relative}: ${changed.has(relative) ? (changed.get(relative) === 'new' ? 'new' : 'modified') : 'synchronized'}`);
@@ -249,9 +304,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           const detail = changes.map(change => `${change.reason === 'new' ? 'NEW' : 'MODIFIED'}  ${change.relative}`).join('\n');
           const answer = await vscode.window.showWarningMessage(
             `WSFTP: ${direction} - ${scope || 'root'} - ${changes.length} files`,
-            {modal:true,detail:`${detail}\n\nApply transfers all listed files and overwrites existing files. Comparison uses size and CRC32; no files are deleted.`},apply,cancel);
+            {modal:true,detail:`${detail}\n\nApply transfers all listed files and overwrites existing files. Comparison uses size and cached CRC32; no files are deleted.`},apply,cancel);
           check();
           if (answer !== apply) { writeLog('Synchronization cancelled in preview; no files transferred.'); return; }
+          // Persist invalidation in batches before any transfer can partially write.
+          for (const change of changes) cache.forget(change.relative);
+          await cache.save();
           let completed = 0;
           for (const change of changes) {
             check();
@@ -281,20 +339,205 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       });
     });
   }
+  async function synchronizeMode(mode: SyncMode, selectedRoot?: vscode.WorkspaceFolder, transferOnly = false): Promise<void> {
+    const target = vscode.window.activeTextEditor?.document.uri;
+    const root = selectedRoot ?? (target && vscode.workspace.getWorkspaceFolder(target)) ?? vscode.workspace.workspaceFolders?.[0];
+    if (!root) throw new UserError('Open a workspace folder.');
+    await run(root,async () => {
+      const original = await config(root);
+      const c = rulesForMode(original,mode);
+      const label = transferOnly ? (mode === 'local' ? 'Root upload' : 'Root download') : mode === 'local' ? 'Local dominance' : mode === 'remote' ? 'Remote dominance' : 'Bidirectional';
+      await session(root,c,async (t,trace) => {
+        await vscode.window.withProgress({location:vscode.ProgressLocation.Notification,title:`WSFTP: ${label}`,cancellable:true},async (progress,token) => {
+          const check = () => { if (token.isCancellationRequested) throw new vscode.CancellationError(); };
+          progress.report({message:'Scanning local and remote files...'});
+          const snapshot = await scanTrees(t,root.uri.fsPath,c,check);
+          const cache = await cacheFor(root,c);
+          cache.prune(snapshot.local,snapshot.remote,c,'');
+          progress.report({message:'Comparing files and synchronization history...'});
+          const actions = (await buildSyncPlan(t,root.uri.fsPath,c,mode,snapshot,cache,check)).filter(action => !transferOnly || !action.kind.startsWith('delete-'));
+          await cache.save();
+          const pending = actions.filter(a => a.kind !== 'conflict');
+          const conflicts = actions.length-pending.length;
+          const deletions = pending.filter(a => a.kind.startsWith('delete-')).length;
+          const detail = actions.map(a => `${a.kind.toUpperCase()}  ${a.relative}${a.directory ? '/' : ''}${a.note && a.kind === 'conflict' ? ' ? '+a.note : ''}`).join('\n');
+          trace(`${label}: ${pending.length} operations, ${deletions} deletions, ${conflicts} conflicts.\n${detail}`);
+          check();
+          if (!actions.length) { void vscode.window.showInformationMessage('WSFTP: no operations needed.'); return; }
+          if (!pending.length) {
+            await vscode.window.showWarningMessage(`WSFTP: ${conflicts} conflicts; no files changed.`,{modal:true,detail:`${detail}\n\nResolve the conflicting files manually or use a dominance preview to choose a side.`},'OK');
+            return;
+          }
+          const apply = {title:'Apply'}, cancel = {title:'Cancel',isCloseAffordance:true};
+          const answer = await vscode.window.showWarningMessage(`WSFTP: ${label} ? ${pending.length} operations, ${deletions} deletions, ${conflicts} conflicts`,
+            {modal:true,detail:`${detail}\n\nApply executes the listed copies and directory operations, including ${deletions} deletions. Existing destination files may be overwritten. Conflicts are skipped. Deletions cannot be undone by this extension.`},apply,cancel);
+          check();
+          if (answer !== apply) { trace('Preview cancelled; no operations applied.'); return; }
+          const checkConfig = async () => {
+            if (JSON.stringify(await config(root)) !== JSON.stringify(original)) throw new UserError('Configuration changed after preview. Run synchronization again.');
+          };
+          await checkConfig();
+          await validateSnapshot(t,root.uri.fsPath,c,snapshot,check);
+          // Persist conservative history before any write; checkpoint completed
+          // operations in batches instead of rewriting a large cache per file.
+          for (const action of pending) if (action.kind === 'upload' || action.kind === 'download') cache.forget(action.relative);
+          await cache.save();
+          let completed = 0;
+          try {
+            for (const action of pending) {
+              check(); await checkConfig();
+              const file = await localPath(root.uri.fsPath,action.relative);
+              if (vscode.workspace.textDocuments.some(d => d.isDirty && (d.uri.fsPath === file || (action.directory && d.uri.fsPath.startsWith(file+path.sep))))) throw new UserError('An affected file has unsaved changes. Save before synchronizing.');
+              await applySyncAction(t,root.uri.fsPath,c,action,snapshot,cache,check);
+              completed++;
+              if (completed % 100 === 0) await cache.save();
+              trace(`${action.kind}: ${action.relative}; completed ${completed}/${pending.length}`);
+              progress.report({increment:100/pending.length,message:`${completed}/${pending.length}: ${action.relative}`});
+            }
+          } finally { await cache.save(); }
+          void vscode.window.showInformationMessage(`WSFTP: ${completed} operations completed; ${conflicts} conflicts skipped.`);
+        });
+      });
+    });
+  }
+  function autoSettings(root: vscode.WorkspaceFolder): { enabled: boolean; seconds: number } {
+    const settings = vscode.workspace.getConfiguration?.('wsftp',root.uri);
+    const seconds = autosyncIntervals.get(root.uri.toString()) ?? 120;
+    return {enabled:autosyncOverrides.get(root.uri.toString()) ?? (settings?.get<boolean>('autoCheck.enabled',false) === true),seconds};
+  }
+  async function refreshConfigSettings(): Promise<void> {
+    const revision = ++settingsRevision;
+    const values = await Promise.all((vscode.workspace.workspaceFolders ?? []).map(async root => {
+      try { const c = await readConfig(root.uri.fsPath); return [root.uri.toString(),c.autosync,c.autosync_secs] as const; }
+      catch { return [root.uri.toString(),false,120] as const; }
+    }));
+    if (disposed || revision !== settingsRevision) return;
+    autosyncOverrides.clear();
+    const previousIntervals = new Map(autosyncIntervals);
+    autosyncIntervals.clear();
+    for (const [id,value,seconds] of values) {
+      if (value !== undefined) autosyncOverrides.set(id,value);
+      autosyncIntervals.set(id,seconds);
+      const state = monitors.get(id);
+      if (state && previousIntervals.get(id) !== seconds) state.due = Date.now();
+    }
+    refreshMonitors();
+  }
+  function refreshMonitors(): void {
+    const enabled = new Set<string>();
+    if (!disposed && vscode.workspace.isTrusted) {
+      for (const root of vscode.workspace.workspaceFolders ?? []) {
+        if (!autoSettings(root).enabled) continue;
+        const id = root.uri.toString(); enabled.add(id);
+        if (!monitors.has(id)) {
+          const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left,10);
+          status.name = `WSFTP automatic check: ${root.name}`;
+          status.text = '$(watch) WSFTP: waiting for first check';
+          status.tooltip = `${root.name}: periodic checks enabled. Click for a bidirectional preview.`;
+          status.command = {command:'wsftp.reviewAutoCheck',title:'Review synchronization changes',arguments:[root.uri]};
+          status.show();
+          monitors.set(id,{monitor:new ChangeMonitor(),status,due:Date.now(),generation:0});
+        }
+      }
+    }
+    for (const [id,state] of monitors) if (!enabled.has(id)) { state.generation++; state.status.dispose(); monitors.delete(id); }
+  }
+  async function automaticChecks(): Promise<void> {
+    await refreshConfigSettings();
+    for (const root of vscode.workspace.workspaceFolders ?? []) {
+      const id = root.uri.toString(), state = monitors.get(id);
+      if (!state || queues.has(id) || state.due > Date.now()) continue;
+      const generation = state.generation;
+      const check = () => {
+        if (disposed || !vscode.workspace.isTrusted || monitors.get(id) !== state || state.generation !== generation || !autoSettings(root).enabled) throw new vscode.CancellationError();
+      };
+      state.due = Date.now()+autoSettings(root).seconds*1000;
+      await run(root,async () => {
+        check();
+        // Background work must not create configuration or open trust/password prompts.
+        const c = await readConfig(root.uri.fsPath);
+        const signature = createHash('sha256').update(JSON.stringify(c)).digest('hex');
+        if (state.signature !== signature) { state.monitor = new ChangeMonitor(); state.signature = signature; }
+        state.status.text = '$(sync~spin) WSFTP: checking';
+        await session(root,c,async (t,trace) => {
+          const snapshot = await scanTrees(t,root.uri.fsPath,c,check);
+          const cache = await cacheFor(root,c);
+          cache.prune(snapshot.local,snapshot.remote,c,'');
+          const actions = await buildSyncPlan(t,root.uri.fsPath,c,'both',state.monitor.stableSnapshot(snapshot),cache,check);
+          check();
+          if (JSON.stringify(await readConfig(root.uri.fsPath)) !== JSON.stringify(c)) throw new vscode.CancellationError();
+          await cache.save(); check();
+          const summary = state.monitor.accept(snapshot,actions);
+          const counts = `${summary.downloads} to download, ${summary.uploads} to upload, ${summary.conflicts} conflicts`;
+          state.status.text = `$(cloud) WSFTP ${root.name}: ?${summary.downloads} ?${summary.uploads} !${summary.conflicts}${summary.waiting ? ' $(watch)' : ''}`;
+          state.status.tooltip = `${counts}. ${summary.waiting ? 'Some remote paths are waiting for two stable checks. ' : ''}Last checked: ${new Date().toLocaleTimeString()}. Click to review; no transfers have been applied.`;
+          trace(`Automatic check: ${counts}; ${summary.waiting} remote paths awaiting stability.`);
+          if (summary.fresh) {
+            void vscode.window.showInformationMessage(`WSFTP ? ${root.name}: ${counts}.`,'Review changes').then(answer => {
+              if (answer === 'Review changes' && !disposed && monitors.get(id) === state) void synchronizeMode('both',root).catch(report);
+            });
+          }
+        },false);
+      },true);
+      // An explicit command may have requested an earlier refresh while checking.
+      if (state.generation === generation) state.due = Date.now()+autoSettings(root).seconds*1000;
+    }
+  }
+  command('wsftp.reviewAutoCheck',async (uri: vscode.Uri) => {
+    const root = vscode.workspace.getWorkspaceFolder(uri);
+    if (root) await synchronizeMode('both',root);
+  });
+  command('wsftp.toggleAutoCheck',async () => {
+    const root = await folder(); if (!root) return;
+    await run(root,async () => {
+      await config(root);
+      const file = (await findConfig(root.uri.fsPath))!;
+      if (vscode.workspace.textDocuments.some(d => d.uri.fsPath === file && d.isDirty)) throw new UserError('Save the configuration before toggling automatic checks.');
+      const original = await fs.readFile(file,'utf8');
+      await refreshConfigSettings();
+      const enabled = autoSettings(root).enabled;
+      const value = JSON.parse(original);
+      value.autosync = !enabled;
+      const indentation = original.match(/\n([ \t]+)"/)?.[1] ?? '  ';
+      const newline = original.includes('\r\n') ? '\r\n' : '\n';
+      if (await fs.readFile(file,'utf8') !== original) throw new UserError('Configuration changed. Toggle automatic checks again.');
+      await fs.writeFile(file,(JSON.stringify(value,null,indentation)+'\n').replace(/\n/g,newline));
+      await refreshConfigSettings();
+      void vscode.window.showInformationMessage(`WSFTP: automatic checks ${enabled ? 'disabled' : 'enabled'}.`);
+    });
+  });
+  if (vscode.workspace.onDidChangeConfiguration) context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(event => {
+    if (event.affectsConfiguration('wsftp.autoCheck')) {
+      for (const state of monitors.values()) { state.generation++; state.due = Date.now(); }
+      refreshMonitors();
+    }
+  }));
+  const checkLoop = new CheckLoop(automaticChecks,() => Math.max(1000,Math.min(15000,...[...monitors.values()].map(state => state.due-Date.now()))));
+  context.subscriptions.push({dispose:() => {
+    disposed = true; checkLoop.dispose();
+    for (const state of monitors.values()) { state.generation++; state.status.dispose(); }
+    monitors.clear();
+  }});
+  await refreshConfigSettings(); checkLoop.start();
   const initialize = async () => {
     if (!vscode.workspace.isTrusted) return;
     await Promise.all((vscode.workspace.workspaceFolders ?? []).map(root => ensureConfig(root.uri.fsPath,path.join(context.extensionPath,'wsftp-sync.json')).catch(report)));
   };
-  if (vscode.workspace.onDidChangeWorkspaceFolders) context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(() => { void initialize(); }));
-  if (vscode.workspace.onDidGrantWorkspaceTrust) context.subscriptions.push(vscode.workspace.onDidGrantWorkspaceTrust(() => { void initialize(); }));
+  if (vscode.workspace.onDidChangeWorkspaceFolders) context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(() => { void refreshConfigSettings(); void initialize(); }));
+  if (vscode.workspace.onDidGrantWorkspaceTrust) context.subscriptions.push(vscode.workspace.onDidGrantWorkspaceTrust(() => { void refreshConfigSettings(); void initialize(); }));
   if (vscode.workspace.createFileSystemWatcher) {
     const watcher = vscode.workspace.createFileSystemWatcher('**/.vscode');
-    context.subscriptions.push(watcher,watcher.onDidCreate(() => { void initialize(); }));
+    context.subscriptions.push(watcher,watcher.onDidCreate(() => { void refreshConfigSettings(); void initialize(); }));
   }
   await initialize();
   context.subscriptions.push(vscode.workspace.onDidSaveTextDocument(async document => {
     if (document.uri.scheme !== 'file' || !vscode.workspace.isTrusted) return;
     const root = vscode.workspace.getWorkspaceFolder(document.uri); if (!root) return;
+    if (path.resolve(document.uri.fsPath) === path.join(root.uri.fsPath,'.vscode','wsftp-sync.json')) {
+      const state = monitors.get(root.uri.toString());
+      if (state) { state.generation++; state.due = Date.now(); }
+      await refreshConfigSettings();
+    }
     await ensureConfig(root.uri.fsPath,path.join(context.extensionPath,'wsftp-sync.json')).then(() => findConfig(root.uri.fsPath)).then(async file => {
       if (!file) return;
       const c = await config(root);

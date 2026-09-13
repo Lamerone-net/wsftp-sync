@@ -1,5 +1,57 @@
 # Changelog
 
+## 0.1.38
+
+- Correct the three shortcuts to Ctrl+Alt+U, Ctrl+Alt+D, and Ctrl+Alt+S for root upload, root download, and bidirectional synchronization; remove Ctrl+Win bindings.
+
+## 0.1.37
+
+- Keep only Ctrl+Win+U, Ctrl+Win+D, and Ctrl+Win+S as extension shortcuts, for root upload, root download, and bidirectional synchronization respectively.
+- Root upload/download previews copy new or modified files and create missing directories without deleting destination-only content.
+- Remove all Ctrl+Alt and platform-specific alternative bindings; dominance commands remain accessible without shortcuts.
+
+## 0.1.36
+
+- Add Ctrl+Alt+S (Cmd+Alt+S on macOS) as an alternative shortcut for manual bidirectional synchronization because Windows can intercept Win+Ctrl+S.
+- Document the Command Palette fallback and clarify that manual synchronization does not require autosync.
+
+## 0.1.35
+
+- Rename the remotePath configuration key to remote_path in validation, discovery, schema, and the bundled example.
+- Update transfers, synchronization, cache identity, and documentation to use the new field; existing configurations must rename the key.
+
+## 0.1.34
+
+- Add autosync_secs to the plugin JSON configuration, defaulting to 120 seconds (two minutes).
+- Validate integer intervals from 1 to 86400 seconds and adapt scheduling for intervals below the previous 15-second polling cadence without overlapping checks.
+- Replace the former VS Code intervalMinutes setting and apply saved interval changes without reloading.
+
+## 0.1.33
+
+- Add the boolean autosync option to the plugin JSON configuration and schema, with false in the bundled example.
+- Give explicit autosync values precedence over the existing VS Code automatic-check setting while preserving the fallback when omitted.
+- Update the toggle command to edit autosync in the plugin configuration; detect saved and external configuration changes.
+
+## 0.1.32
+
+- Add optional workspace automatic checks, a toggle command, and a configurable 1?60 minute interval (five minutes by default).
+- Show per-workspace synchronization counts and notify only about newly detected differences; open a fresh bidirectional preview for review.
+- Require two stable remote observations, avoid overlapping checks, yield to manual operations, and cancel checks when disabled or disposed.
+- Keep background checks read-only for workspace/server content and suppress interactive credential, discovery, and trust prompts.
+
+## 0.1.31
+
+- Add Win+Ctrl+U for local dominance, Win+Ctrl+D for remote dominance, and Win+Ctrl+S for bidirectional synchronization.
+- Preview destination-only file and directory deletions in dominance modes; remove directories only when empty and preserve ignored descendants.
+- Persist the last agreed content fingerprint to route bidirectional changes and skip conflicts, without deleting one-sided files.
+- Revalidate previews and individual operations, retain completed synchronization history, and preserve history when clearing cached hashes.
+
+## 0.1.30
+
+- Persist local and remote CRC32 values with relative paths, modification times, and sizes; reuse hashes while metadata is unchanged.
+- Isolate caches by workspace, server, and remote root; retain pending differences after cancelled previews.
+- Invalidate transferred files, prune missing entries within scanned directories, and add a command to clear the synchronization cache.
+
 ## 0.1.29
 
 - Document the four-step size/CRC32 synchronization strategy, temporary verification downloads, and the scope of direct file uploads.

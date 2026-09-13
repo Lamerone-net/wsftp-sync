@@ -57,12 +57,12 @@ export async function applyDiscovery(root: string, original: string, result: {pr
   value.discover = false;
   value.protocol = result.protocol;
   value.passive = result.protocol === 'sftp' ? false : result.passive;
-  const addedRemotePath = value.remotePath === undefined;
-  if (addedRemotePath) value.remotePath = '/';
+  const addedRemotePath = value.remote_path === undefined;
+  if (addedRemotePath) value.remote_path = '/';
   parseConnectionConfig(value);
   const indentation = original.match(/\n([ \t]+)"/)?.[1] ?? '  ';
   const newline = original.includes('\r\n') ? '\r\n' : '\n';
   const updated = (JSON.stringify(value,null,indentation)+'\n').replace(/\n/g,newline);
   await fs.writeFile(file,updated,'utf8');
-  return `${JSON.stringify({...result,passive:value.passive,discover:false,...(addedRemotePath ? {remotePath:'/'} : {})},null,2)}`;
+  return `${JSON.stringify({...result,passive:value.passive,discover:false,...(addedRemotePath ? {remote_path:'/'} : {})},null,2)}`;
 }

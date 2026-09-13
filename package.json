@@ -2,7 +2,7 @@
   "name": "wsftp-sync",
   "displayName": "WSFTP Sync",
   "description": "SFTP, FTP and FTPS transfers with sync preview and upload on save.",
-  "version": "0.1.29",
+  "version": "0.1.38",
   "publisher": "sparviero-local",
   "license": "GPL-3.0-only",
   "icon": "images/icon.png",
@@ -36,16 +36,19 @@
   "contributes": {
     "keybindings": [
       {
-        "command": "wsftp.uploadRoot",
+        "command": "wsftp.syncUploadRoot",
         "key": "ctrl+alt+u",
-        "mac": "cmd+alt+u",
-        "when": "workspaceFolderCount > 0 && (editorTextFocus || filesExplorerFocus || !inputFocus)"
+        "when": "workspaceFolderCount > 0"
       },
       {
-        "command": "wsftp.downloadRoot",
+        "command": "wsftp.syncDownloadRoot",
         "key": "ctrl+alt+d",
-        "mac": "cmd+alt+d",
-        "when": "workspaceFolderCount > 0 && (editorTextFocus || filesExplorerFocus || !inputFocus)"
+        "when": "workspaceFolderCount > 0"
+      },
+      {
+        "command": "wsftp.bidirectional",
+        "key": "ctrl+alt+s",
+        "when": "workspaceFolderCount > 0"
       }
     ],
     "commands": [
@@ -92,6 +95,34 @@
       {
         "command": "wsftp.downloadDir",
         "title": "WSFTP: Download dir"
+      },
+      {
+        "command": "wsftp.clearCache",
+        "title": "WSFTP: Clear synchronization cache"
+      },
+      {
+        "command": "wsftp.mirrorLocal",
+        "title": "WSFTP: Synchronize: Local dominance"
+      },
+      {
+        "command": "wsftp.mirrorRemote",
+        "title": "WSFTP: Synchronize: Remote dominance"
+      },
+      {
+        "command": "wsftp.bidirectional",
+        "title": "WSFTP: Synchronize: Bidirectional"
+      },
+      {
+        "command": "wsftp.toggleAutoCheck",
+        "title": "WSFTP: Toggle automatic checks"
+      },
+      {
+        "command": "wsftp.syncUploadRoot",
+        "title": "WSFTP: Synchronize root: Upload"
+      },
+      {
+        "command": "wsftp.syncDownloadRoot",
+        "title": "WSFTP: Synchronize root: Download"
       }
     ],
     "menus": {
@@ -123,7 +154,18 @@
         "fileMatch": "/.vscode/wsftp-sync.json",
         "url": "./schemas/config.schema.json"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "WSFTP Sync",
+      "properties": {
+        "wsftp.autoCheck.enabled": {
+          "type": "boolean",
+          "default": false,
+          "scope": "resource",
+          "description": "Fallback for automatic checks when autosync is omitted from .vscode/wsftp-sync.json. Explicit autosync true/false takes precedence."
+        }
+      }
+    }
   },
   "scripts": {
     "compile": "tsc -p .",

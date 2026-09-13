@@ -4,8 +4,8 @@ const { discoverProtocol } = require('../dist/discovery');
 const { parseConnectionConfig } = require('../dist/config');
 const config = () => parseConnectionConfig({discover:true,host:'localhost',port:2121,username:'user',password:'secret'});
 
-test('discovery validates its flag and requires an explicit port, not protocol or remotePath', () => {
-  assert.equal(config().remotePath,'/');
+test('discovery validates its flag and requires an explicit port, not protocol or remote_path', () => {
+  assert.equal(config().remote_path,'/');
   assert.throws(() => parseConnectionConfig({discover:'true'}),/discover must be a boolean/);
   assert.throws(() => parseConnectionConfig({discover:true,host:'localhost',username:'user'}),/port is required/);
 });

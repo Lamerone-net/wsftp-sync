@@ -5,6 +5,7 @@ import { createReadStream } from 'node:fs';
 import os from 'node:os';
 import { Config, Entry, Change, UserError, excluded, remoteFile, safeRelative } from './core';
 import { Transport, inspectRemote } from './transport';
+import { SyncCache } from './cache';
 
 export async function localPath(root: string, relative: string): Promise<string> {
   safeRelative(relative);
@@ -37,7 +38,7 @@ export async function scanLocal(root: string, c: Config, cancelled: () => void, 
 export async function scanRemote(t: Transport, c: Config, cancelled: () => void, scope = ''): Promise<Map<string, Entry>> {
   const result = new Map<string, Entry>();
   if (scope && excluded(scope,c.exclude,c.legacyIgnore)) return result;
-  let start = c.remotePath;
+  let start = c.remote_path;
   if (scope) {
     for (const part of safeRelative(scope).split('/')) {
       cancelled();
@@ -91,7 +92,7 @@ export async function crc32File(file: string, cancelled: () => void): Promise<st
   return ((crc ^ 0xffffffff) >>> 0).toString(16).padStart(8,'0');
 }
 
-export async function planSync(t: Transport, c: Config, root: string, local: Map<string, Entry>, remote: Map<string, Entry>, direction: 'upload' | 'download', cancelled: () => void, log: (message: string) => void = () => {}): Promise<Change[]> {
+export async function planSync(t: Transport, c: Config, root: string, local: Map<string, Entry>, remote: Map<string, Entry>, direction: 'upload' | 'download', cancelled: () => void, log: (message: string) => void = () => {}, cache?: SyncCache): Promise<Change[]> {
   const source = direction === 'upload' ? local : remote;
   const target = direction === 'upload' ? remote : local;
   const candidates: Change[] = [...source].map(([relative,entry]) => ({relative,source:entry,target:target.get(relative),reason:target.has(relative) ? 'changed' : 'new'}));
@@ -116,21 +117,31 @@ export async function planSync(t: Transport, c: Config, root: string, local: Map
       const current = await inspectRemote(t,c,change.relative);
       if (!current || current.size !== expectedRemote.size || current.mtime !== expectedRemote.mtime) throw new UserError('Remote file changed during content verification. Run synchronization again.');
     };
+    const cachedLocal = cache?.get('local',change.relative,expectedLocal);
+    const cachedRemote = cache?.get('remote',change.relative,expectedRemote);
+    if (cachedLocal !== undefined && cachedRemote !== undefined) {
+      log(`Cache hit: ${change.relative}; local CRC32=${cachedLocal}; remote CRC32=${cachedRemote}`);
+      if (cachedLocal !== cachedRemote) changes.push(change);
+      else cache?.acknowledge(change.relative,`${expectedLocal.size}:${cachedLocal}`);
+      continue;
+    }
     await stableLocal();
     await stableRemote();
     const temporary = await fs.mkdtemp(path.join(os.tmpdir(),'wsftp-compare-'));
     try {
       const copy = path.join(temporary,'remote');
-      await t.download(remoteFile(c,change.relative),copy);
+      if (cachedRemote === undefined) await t.download(remoteFile(c,change.relative),copy);
       cancelled();
-      const localHash = await crc32File(file,cancelled);
-      const remoteHash = await crc32File(copy,cancelled);
+      const localHash = cachedLocal ?? await crc32File(file,cancelled);
+      const remoteHash = cachedRemote ?? await crc32File(copy,cancelled);
       await stableLocal();
       await stableRemote();
       cancelled();
+      cache?.set('local',change.relative,expectedLocal,localHash);
+      cache?.set('remote',change.relative,expectedRemote,remoteHash);
       log(`${change.relative}: local CRC32=${localHash}; remote CRC32=${remoteHash}`);
       if (localHash !== remoteHash) { changes.push(change); log(`Content differs: ${change.relative}`); }
-      else log(`Already synchronized (matching size and CRC32): ${change.relative}`);
+      else { cache?.acknowledge(change.relative,`${expectedLocal.size}:${localHash}`); log(`Already synchronized (matching size and CRC32): ${change.relative}`); }
     } finally { await fs.rm(temporary,{recursive:true,force:true}); }
   }
   return changes;
