@@ -1,0 +1,28 @@
+{
+  "username": "",
+  "password": "",
+  "host": "",
+  "remotePath": "/",
+  "port": 21,
+  "upload_on_save": true,
+  "discover": true,
+  "protocol": "ftps",
+  "passive": true,
+  "ignore_always": [
+    "**/.ssh/**",
+    "**/.wsftp-*.tmp",
+    "/^(?:\\.git|\\.vscode|node_modules)(?:/|$)/",
+    "/(?:^|/)\\.env(?:\\.[^/]*)?$/",
+    "/\\.(?:pem|key)$/",
+    "/(?:^|/)id_(?:rsa|ed25519)$/"
+  ],
+  "ignore_upload": [
+    "skip_download_dir",
+    "skip_download_file.php"
+  ],
+  "ignore_download": [
+    "skip_upload_dir",
+    "skip_upload_file.php"
+  ],
+  "debug": true
+}

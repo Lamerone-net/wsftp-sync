@@ -1,0 +1,150 @@
+{
+  "name": "wsftp-sync",
+  "displayName": "WSFTP Sync",
+  "description": "SFTP, FTP and FTPS transfers with sync preview and upload on save.",
+  "version": "0.1.29",
+  "publisher": "sparviero-local",
+  "license": "GPL-3.0-only",
+  "icon": "images/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Lamerone-net/wsftp-sync.git"
+  },
+  "homepage": "https://github.com/Lamerone-net/wsftp-sync#readme",
+  "bugs": {
+    "url": "https://github.com/Lamerone-net/wsftp-sync/issues"
+  },
+  "engines": {
+    "vscode": "^1.96.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false
+    },
+    "virtualWorkspaces": false
+  },
+  "extensionKind": [
+    "workspace"
+  ],
+  "contributes": {
+    "keybindings": [
+      {
+        "command": "wsftp.uploadRoot",
+        "key": "ctrl+alt+u",
+        "mac": "cmd+alt+u",
+        "when": "workspaceFolderCount > 0 && (editorTextFocus || filesExplorerFocus || !inputFocus)"
+      },
+      {
+        "command": "wsftp.downloadRoot",
+        "key": "ctrl+alt+d",
+        "mac": "cmd+alt+d",
+        "when": "workspaceFolderCount > 0 && (editorTextFocus || filesExplorerFocus || !inputFocus)"
+      }
+    ],
+    "commands": [
+      {
+        "command": "wsftp.configure",
+        "title": "WSFTP: Create/open configuration"
+      },
+      {
+        "command": "wsftp.credentials",
+        "title": "WSFTP: Set credential"
+      },
+      {
+        "command": "wsftp.forget",
+        "title": "WSFTP: Remove saved credential"
+      },
+      {
+        "command": "wsftp.upload",
+        "title": "WSFTP: Upload file"
+      },
+      {
+        "command": "wsftp.download",
+        "title": "WSFTP: Download file"
+      },
+      {
+        "command": "wsftp.sync",
+        "title": "WSFTP: Synchronize with preview"
+      },
+      {
+        "command": "wsftp.log",
+        "title": "WSFTP: Show log"
+      },
+      {
+        "command": "wsftp.uploadRoot",
+        "title": "WSFTP: Upload root"
+      },
+      {
+        "command": "wsftp.downloadRoot",
+        "title": "WSFTP: Download root"
+      },
+      {
+        "command": "wsftp.uploadDir",
+        "title": "WSFTP: Upload dir"
+      },
+      {
+        "command": "wsftp.downloadDir",
+        "title": "WSFTP: Download dir"
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "wsftp.upload",
+          "when": "resourceScheme == file && !explorerResourceIsFolder",
+          "group": "wsftp"
+        },
+        {
+          "command": "wsftp.download",
+          "when": "resourceScheme == file && !explorerResourceIsFolder",
+          "group": "wsftp"
+        },
+        {
+          "command": "wsftp.uploadDir",
+          "when": "resourceScheme == file && explorerResourceIsFolder",
+          "group": "wsftp"
+        },
+        {
+          "command": "wsftp.downloadDir",
+          "when": "resourceScheme == file && explorerResourceIsFolder",
+          "group": "wsftp"
+        }
+      ]
+    },
+    "jsonValidation": [
+      {
+        "fileMatch": "/.vscode/wsftp-sync.json",
+        "url": "./schemas/config.schema.json"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "check": "tsc -p . --noEmit",
+    "test": "npm run compile && node --test test/*.test.cjs",
+    "vscode:prepublish": "npm run compile",
+    "package": "vsce package"
+  },
+  "dependencies": {
+    "basic-ftp": "^5.0.5",
+    "minimatch": "^10.0.1",
+    "pcre2-wasm": "10.47.5",
+    "ssh2-sftp-client": "^11.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/ssh2-sftp-client": "^9.0.0",
+    "@types/vscode": "1.96.0",
+    "@vscode/vsce": "^3.0.0",
+    "ftp-srv": "^4.6.3",
+    "selfsigned": "^5.5.0",
+    "typescript": "^5.7.0"
+  }
+}

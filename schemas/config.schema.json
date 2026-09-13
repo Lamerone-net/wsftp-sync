@@ -1,0 +1,119 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "WSFTP Sync",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "host",
+    "username"
+  ],
+  "properties": {
+    "protocol": {
+      "enum": [
+        "sftp",
+        "ftp",
+        "ftps"
+      ],
+      "default": "sftp",
+      "description": "Explicit FTPS over TLS; SFTP over SSH."
+    },
+    "host": {
+      "type": "string",
+      "minLength": 1
+    },
+    "port": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65535,
+      "description": "Defaults to 22 for SFTP, 21 for FTP/FTPS."
+    },
+    "username": {
+      "type": "string",
+      "minLength": 1
+    },
+    "remotePath": {
+      "type": "string",
+      "pattern": "^/",
+      "description": "Absolute path to an existing directory on the server."
+    },
+    "ignore_upload": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^[^!]"
+      },
+      "default": [],
+      "description": "Root-relative paths or glob patterns excluded from every upload. Directories exclude all descendants. Added to common exclusions. Supports /pattern/flags PCRE2 regular expressions; flags: i, m, s, x, u. Escape backslashes in JSON."
+    },
+    "ignore_download": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^[^!]"
+      },
+      "default": [],
+      "description": "Root-relative paths or glob patterns excluded from every download. Directories exclude all descendants. Added to common exclusions. Supports /pattern/flags PCRE2 regular expressions; flags: i, m, s, x, u. Escape backslashes in JSON."
+    },
+    "debug": {
+      "type": "boolean",
+      "default": false,
+      "description": "Write full protocol diagnostics, FTP commands and server replies to the Debug Console and WSFTP Sync Output. Credentials are redacted."
+    },
+    "password": {
+      "type": "string",
+      "description": "Server password. A credential stored in VS Code takes precedence."
+    },
+    "passive": {
+      "type": "boolean",
+      "default": true,
+      "description": "true uses EPSV/PASV; false uses active FTP with PORT/EPRT and no passive commands. Applies to FTP/FTPS listings and transfers; ignored for SFTP."
+    },
+    "ignore_always": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^[^!]"
+      },
+      "default": [],
+      "description": "Root-relative paths or globs excluded from uploads and downloads, with no additional automatic exclusions. Supports /pattern/flags PCRE2 regular expressions; flags: i, m, s, x, u. Escape backslashes in JSON."
+    },
+    "upload_on_save": {
+      "type": "boolean",
+      "default": false,
+      "description": "Automatically upload saved documents unless excluded. Must be a boolean. uploadOnSave is not accepted."
+    },
+    "discover": {
+      "type": "boolean",
+      "default": false,
+      "description": "Discover protocol and data mode on the configured port without transferring files. On success, automatically update protocol/passive and set discover to false in the configuration, then show a confirmation."
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "discover"
+        ],
+        "properties": {
+          "discover": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "port"
+        ]
+      },
+      "else": {
+        "required": [
+          "protocol",
+          "remotePath"
+        ]
+      }
+    }
+  ]
+}

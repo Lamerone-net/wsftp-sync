@@ -1,0 +1,181 @@
+# WSFTP Sync
+
+Project repository: [Lamerone-net/wsftp-sync](https://github.com/Lamerone-net/wsftp-sync). Use [GitHub Issues](https://github.com/Lamerone-net/wsftp-sync/issues) for bug reports and feature requests.
+
+A TypeScript extension for VS Code that transfers files over SFTP, FTP, and explicit FTPS. This is an independent implementation inspired by the FTP-Sync workflow, with no affiliation to that project.
+
+## Local installation
+
+In VS Code, run **Extensions: Install from VSIX...**, select `wsftp-sync-0.1.27.vsix`, and open a trusted workspace. Alternatively:
+
+```sh
+code --install-extension wsftp-sync-0.1.27.vsix
+```
+
+## Configuration
+
+The only supported configuration location is `.vscode/wsftp-sync.json` inside each workspace folder. A `wsftp-sync.json` in the workspace root or any other directory is never loaded. Files named `ftp-sync.json` or `wsftp.json` are ignored. Settings are not merged. On activation, when workspace folders are added, or when an existing workspace gains a `.vscode` directory, the extension creates `.vscode/wsftp-sync.json` if missing, copying the bundled root-level example exactly. It never creates `.vscode` automatically or overwrites an existing configuration. The explicit configuration command can create the directory and opens the template-based configuration. The root-level [wsftp-sync.json](wsftp-sync.json) is an example only: it is automatically copied into an existing `.vscode` directory when needed. Fill in the host and credentials before connecting. The root-level example is transferable unless a configured filter excludes it.
+
+Run **WSFTP: Create/open configuration**, enter your server settings, and use **WSFTP: Set credential** to store a password in VS Code SecretStorage. Stored credentials take precedence over JSON credentials and are associated with the workspace, protocol, host, port, username. **WSFTP: Remove saved credential** removes that stored value; a JSON credential can still be used. Manual operations can prompt for a temporary password. Automatic uploads never open credential or trust prompts, so perform a manual transfer first.
+
+### Options in the example
+
+| Option | Required / default | Purpose and behavior |
+| --- | --- | --- |
+| `username` | Required to activate operations | Account used to authenticate to the server. Missing, null, empty, or whitespace-only values keep the extension inactive: no connections, discovery, transfers, or configuration validation messages. |
+| `password` | Required to activate operations | Server password for password authentication. A stored VS Code credential overrides this value. A nonempty value is required even when using SecretStorage. |
+| `host` | Required string | Server hostname or IP address, without a URL scheme or directory path. |
+| `remotePath` | Required; `/` during discovery if omitted | Existing absolute server directory mapped to the workspace root. For example, `/var/www` maps local `assets/a.css` to `/var/www/assets/a.css`. Use `/` separators; `..` and backslashes are rejected. |
+| `port` | SFTP: `22`; FTP/FTPS: `21`; required for discovery | Integer from 1 to 65535. Set a different port when required by your server. |
+| `protocol` | Required unless `discover: true` | `sftp` uses SSH; `ftp` uses FTP; `ftps` uses explicit FTP over TLS. Implicit FTPS is unsupported. |
+| `upload_on_save` | `false` | Automatically uploads the saved document if it is not excluded. It does not synchronize the entire workspace or generated files. Requires a trusted workspace and previously authorized connection. |
+| `passive` | `true` | Accepts `true` or `false`. With `true`, FTP/FTPS sends `EPSV` (or falls back to `PASV`) before data transfers. With `false`, no passive command is sent: active mode uses `PORT` for IPv4 or `EPRT` for IPv6 so the server connects back to the client. Applies to listings, uploads, and downloads. No effect on SFTP. |
+| `debug` | `false` | When `true`, writes protocol diagnostics and operation messages to **Debug Console** and **Output > WSFTP Sync**. Includes FTP/FTPS commands and complete server replies, SSH/SFTP diagnostics, scans, comparisons, and transfers. Passwords are redacted. When `false`, protocol diagnostics are disabled; normal Output logging remains available. |
+| `ignore_always` | `[]` | Paths, glob patterns, or PCRE2 regexes excluded from both upload and download. No additional exclusions are added automatically. A directory excludes all descendants. |
+| `ignore_upload` | `[]` | Excludes matching files/directories only from uploads, including upload on save. Does not exclude downloads. |
+| `ignore_download` | `[]` | Excludes matching files/directories only from downloads. Does not exclude uploads. |
+
+The illustrative filenames under `ignore_upload` and `ignore_download` in the supplied example are reversed: the option name determines the direction, regardless of the filenames inside it. For clearer examples:
+
+```json
+"ignore_always": ["hidden_dir", "credentials.json"],
+"ignore_upload": ["do_not_upload_dir", "do_not_upload_file.php"],
+"ignore_download": ["do_not_download_dir", "do_not_download_file.php"]
+```
+
+Use the exact option names shown above. Camel-case aliases such as `uploadOnSave` and `ignoreAlways` are rejected.
+
+All three exclusion lists are relative to the workspace root. Use paths such as `assets/local.css` or globs such as `**/*.log`. Leading `./`, trailing `/`, and Windows separators are normalized. Empty lists add no rules; `!` negation is rejected. Rules apply to individual transfers, root and directory synchronization, and previews. They do not remove existing files on either side.
+
+The `secure` option has been removed and is rejected as unknown. Select encryption through `protocol` only: `sftp` for SSH, `ftps` for explicit TLS, or `ftp` for unencrypted FTP. To migrate `"protocol": "ftp", "secure": true`, remove `secure` and set `"protocol": "ftps"`.
+
+### Protocol discovery
+
+Set `"discover": true` in `.vscode/wsftp-sync.json` and save that file to start discovery. A manual upload, download, or synchronization command also starts discovery while this flag is enabled. Other saved documents do not start discovery or upload files. Discovery never uploads or downloads files. On success it automatically updates `.vscode/wsftp-sync.json`: sets `discover` to `false`, sets `protocol`, and sets `passive` for FTP/FTPS or keeps it as `false` for SFTP. Other settings are preserved. If `remotePath` was omitted, it adds `/`, the directory tested during discovery.
+
+```json
+{
+  "discover": true,
+  "host": "example.com",
+  "port": 21,
+  "username": "ftp_username",
+  "password": "ftp_password"
+}
+```
+
+`discover` is a boolean and defaults to `false`. The explicit `port` is used for every attempt; no other ports are scanned. The order is SFTP, FTPS passive, FTPS active, FTP passive, FTP active. Discovery stops at the first successful connection and directory listing and immediately shows the settings popup; later protocols are not attempted. Existing `protocol` and `passive` settings do not determine the trial order. Discovery uses password authentication, requires a nonempty `password` in the configuration and does not use private keys or stored protocol-specific credentials. A fixed 15-second timeout applies to connection attempts, so several failures can take time; cancellation stops subsequent attempts after an ongoing operation finishes or times out.
+
+A successful attempt must authenticate and list `remotePath` (default `/` during discovery), which checks the FTP data mode as well as the control connection. Listing permission failures can therefore prevent detection. During discovery, an untrusted FTPS certificate opens the certificate verification popup described below. SFTP requires a trusted host key; rejecting it stops discovery.
+
+Before trying unencrypted FTP, a warning asks permission to send credentials in plain text and explains the high risk of interception. Refusing stops discovery. After saving the changes, a modal popup confirms "The configuration file has been updated." and lists the changed settings. No manual configuration edit is required. If the file changed during discovery or has unsaved editor changes, it is not overwritten and an error asks you to retry. For SFTP, the saved settings and popup include `"passive": false`; this option has no effect on SFTP. An FTP result repeats the security warning. If no attempt succeeds, an error points to the Output logs; no settings are guessed. Transfers can resume on the next operation using the updated configuration.
+
+### Strict option validation
+
+If any of `username`, `password`, or `host` is missing, null, empty, or whitespace-only, the extension silently skips all operations before validating other settings. No discovery, transfer, connection, or credential prompt is started, even if a stored credential exists. The JSON must still be syntactically valid to read these fields.
+
+Only the 13 keys in the example are accepted: `username`, `password`, `host`, `remotePath`, `port`, `upload_on_save`, `discover`, `protocol`, `passive`, `ignore_always`, `ignore_upload`, `ignore_download`, and `debug`.
+
+All other keys are rejected, including old aliases, `exclude`, `timeout`, SSH key settings, `secureOptions`, and `$schema`. A single unknown key produces `invalid option <name>`; multiple unknown keys are listed together. Values are not exposed in the message. Invalid values for recognized options also stop the operation. Workspaces without a supported configuration are ignored on save.
+
+Connection timeout is fixed at 15000 milliseconds. Authentication uses passwords. FTPS certificates must pass normal validation or be explicitly accepted by fingerprint; SFTP host fingerprints are verified and stored through the trust prompt.
+
+Active mode (`passive: false`) advertises the local address of the control connection and a temporary listening port. The server must be able to reach that address and port; NAT or a firewall can block the connection. There is no automatic fallback to passive mode. FTPS keeps the data connection encrypted in either mode.
+
+FTP requires initial approval because credentials and files travel in plain text. FTPS requires a valid TLS certificate by default. SFTP requires host-key verification. Enable `upload_on_save` after checking a manual connection and destination.
+
+## FTPS certificate verification
+
+If an FTPS certificate is self-signed or otherwise not automatically trusted, a modal popup shows the host, port, SHA256 fingerprint, subject, issuer, validity dates, and validation error. Verify the fingerprint with your server administrator and choose **Trust this certificate** to continue. The decision is requested before sending username or password.
+
+The accepted fingerprint is stored in VS Code for that host and port and reused by discovery and normal connections. A different certificate requires a new confirmation. Automatic uploads never open trust prompts: an unknown or changed certificate stops the upload and asks you to run a manual operation. Rejecting the certificate stops discovery rather than falling back to unencrypted FTP.
+
+Data connections use the accepted certificate chain and must match the control connection fingerprint; TLS chain and date checks still apply. No configuration option disables certificate verification globally.
+
+## Transfers and synchronization
+
+- **WSFTP: Upload file** and **WSFTP: Download file** operate on the file selected in Explorer or the active editor. Downloads require confirmation before overwriting.
+- **Ctrl+Alt+U** and **Ctrl+Alt+D** compare local/server and server/local files from the project root to the configured `remotePath` (macOS: **Cmd+Alt+U/D**). No directory prompt is shown. In multi-root workspaces, these commands use the active file's workspace folder, or the first folder if no workspace file is active. Search for `wsftp` in Keyboard Shortcuts to customize the bindings.
+- The preview lists files that are new or differ in size or CRC32. **Apply**, the default Enter action, transfers the entire list; **Cancel** or Escape cancels. There is no second confirmation. A message appears when no differences are found.
+- The Explorer folder context menu provides **WSFTP: Upload dir** and **WSFTP: Download dir**, with the same preview restricted to the selected directory and its descendants. Paths remain relative to the workspace root: `sub/file.php` maps to `remotePath/sub/file.php`.
+- The synchronization command (`wsftp.sync`) lets you choose upload or download and opens the same preview for the root. Downloads include remote files that do not yet exist locally.
+- Synchronization includes all nonexcluded subdirectories. It does not delete files or perform bidirectional merges.
+- Operations run sequentially within each workspace folder. Commands that require workspace selection prompt when multiple folders are available; root synchronization follows the active-file rule above.
+- Downloads use a temporary file in the destination directory, so a transfer failure preserves the previous file. Uploads overwrite remote files directly; an interruption can leave an incomplete remote file.
+- File metadata is checked again before each synchronization transfer. Synchronization is not transactional and cannot isolate concurrent changes on the server.
+- Cancellation stops scans or subsequent transfers. An ongoing transfer finishes before cancellation takes effect. Completed transfers remain applied and are recorded in the log even if a later operation fails.
+
+### File comparison strategy
+
+Root and directory synchronization use the following upload rules. If the remote file is missing, it is included in the upload immediately. Otherwise:
+
+1. If the local and remote file sizes differ, upload the file without calculating CRC32.
+2. If the sizes match, calculate CRC32 for both files.
+3. If the CRC32 values differ, upload the file.
+4. If the CRC32 values match, skip the upload.
+
+Files requiring an upload appear in the preview and are transferred when you select **Apply**. Download synchronization uses the same comparison in the opposite direction.
+
+Modification-time (`mtime`) differences do not determine whether a file needs a transfer. No synchronization cache is used. Metadata is still rechecked to detect files changing during verification or after the preview.
+
+CRC32 is calculated incrementally. For equal-size files, verification downloads a temporary remote copy and uses disk space for one file at a time; it does not overwrite workspace files. CRC32 can have collisions and is not a cryptographic guarantee of equality. Synchronization downloads preserve remote timestamps when available.
+
+These comparison rules apply to synchronization previews. **WSFTP: Upload file** and `upload_on_save` upload the selected or saved file directly, without a CRC32 comparison.
+
+There are no hardcoded exclusions. Only `ignore_always`, `ignore_upload`, and `ignore_download` control path filtering. The rules included in the example are editable suggestions: remove them or use empty lists to include all regular files and directories, including `.git`, `.vscode`, `node_modules`, `.env`, keys, and the configuration itself. Symbolic links are skipped during scans and rejected in transfer paths below configured directories. Names that are not portable to Windows are rejected. Implicit FTPS, proxies, SSH agents, multiple profiles within one folder, permission management, and remote deletion are unsupported.
+
+## Output logs
+
+Run the WSFTP log command (`wsftp.log`) to open **Output > WSFTP Sync**. Logs include timestamps, connection protocol, host, port, username, remote directory, timeout, directory scans, synchronization comparisons, transfer starts and results, exclusions, cancellations, and errors. Comparisons report whether source files are new, modified, or synchronized by size and CRC32. Temporary downloads during content verification are logged and do not overwrite workspace files.
+
+Connection and transfer diagnostics redact the configured password and session secret. Set `debug: true` to enable raw protocol diagnostics. Open **View > Debug Console** to see them; the extension writes directly through the VS Code Debug Console API, so an Extension Development Host is not required. Multiline server replies are preserved there. The Output channel also contains these diagnostics, with line breaks flattened. Debugging is read again for each operation; set it to `false` to disable protocol logging on the next connection. Logs contain server addresses and file paths, so review them before sharing.
+
+## Direction-specific exclusions
+
+`.vscode/wsftp-sync.json` supports:
+
+```json
+"ignore_upload": ["original_documents", "config/local.php"],
+"ignore_download": ["output", "assets/local.css"]
+```
+
+Paths are relative to the project root and use `/` separators. A directory excludes all descendants. Glob patterns such as `**/*.log` are supported. These lists accept paths/globs and explicit `/pattern/flags` PCRE2 regular expressions.
+
+`ignore_upload` applies only to uploads; `ignore_download` applies only to downloads. Rules cover individual files, upload on save, root synchronization, and directory commands. Excluded files do not appear in previews. Shared rules (`ignore_always`) apply in both directions. Empty lists add no exclusions; `!` negation is unsupported.
+
+## Perl-compatible ignore expressions
+
+All three ignore lists support PCRE2 10.47 regular expressions in `/pattern/flags` form, alongside existing paths and globs. A value starting with `/` is treated as a regex; other values retain glob semantics. Regex backslashes are preserved and are never converted to path separators.
+
+```json
+"ignore_always": [
+  "/^\\.git(?:/|$)/",
+  "/(?:^|/)\\.env(?:\\.[^/]*)?$/",
+  "node_modules/**"
+],
+"ignore_upload": ["/\\.(?:bak|tmp)$/i"],
+"ignore_download": ["/^uploads(?:/|$)/"]
+```
+
+JSON requires doubled backslashes: the pattern `\.php$` is written as `"/\\.php$/i"` inside JSON. Supported suffix flags are `i` (case-insensitive), `m` (multiline), `s` (dot matches newline), `x` (extended syntax), and `u` (UTF). Use PCRE2 inline options for additional modes, such as `(?U)` for ungreedy matching. PCRE2 supports Perl-style constructs including lookarounds, backreferences, atomic groups, and `\K`; it is not the JavaScript RegExp engine and does not execute Perl code.
+
+Matching uses workspace-relative paths with `/` separators. Regexes search anywhere unless anchored with `^`/`$`. Ancestor paths are checked too, so matching a directory excludes its descendants. Omitted or empty lists still exclude nothing automatically.
+
+Malformed regexes or unsupported flags stop the operation with the list name and zero-based entry index, for example `Invalid regex in ignore_upload[0]`. Compiled patterns are cached (up to 256) and reused. Matching has backtracking and recursion limits; exceeding a limit reports an error instead of silently treating the file as included. The WASM engine is loaded only when regex filters are used and is bundled with the extension, with no runtime download or native installation required.
+
+## Development
+
+Requires Node.js 22 or later and VS Code 1.96 or later.
+
+```sh
+npm install
+npm test
+npm run package
+```
+
+On Windows, use `npm.cmd` if PowerShell blocks scripts. Press F5 to open the Extension Development Host. Automated tests cover configuration, exclusions, paths, synchronization planning, download handling, real transfers against local SFTP/FTP/FTPS servers, and rejection of invalid host keys, passwords, and certificates. The VSIX uses SSH2's JavaScript fallback and excludes optional native accelerators. Verify the Extension Development Host interface and behavior against your server using a dedicated remote directory, including previews and upload on save.
+
+Keep documentation, changelogs, code comments, and other developer-facing text in English.
+
+For Marketplace publication, replace `publisher: sparviero-local` with a registered publisher and verify the public extension name before rebuilding. Repository metadata and an icon are included. Packaging does not publish the extension. See [Publishing Extensions](https://code.visualstudio.com/api/working-with-extensions/publishing-extension).
+
+Libraries: [pcre2-wasm](https://github.com/gudoshnikovn/pcre2-wasm), [ssh2-sftp-client](https://github.com/theophilusx/ssh2-sftp-client), [basic-ftp](https://github.com/patrickjuchli/basic-ftp). Licensed under GPL-3.0-only; see LICENSE.
