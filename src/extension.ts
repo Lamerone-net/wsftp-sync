@@ -20,6 +20,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   };
   const queues = new Map<string, Promise<void>>();
   const monitors = new Map<string, { monitor: ChangeMonitor; status: vscode.StatusBarItem; due: number; generation: number; signature?: string }>();
+  let closeAutoNotice: (() => void) | undefined;
   let disposed = false;
   const autosyncOverrides = new Map<string, boolean>();
   let settingsRevision = 0;
@@ -440,13 +441,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         }
       }
     }
-    for (const [id,state] of monitors) if (!enabled.has(id)) { state.generation++; state.status.dispose(); monitors.delete(id); }
+    for (const [id,state] of monitors) if (!enabled.has(id)) { state.generation++; closeAutoNotice?.(); state.status.dispose(); monitors.delete(id); }
   }
   async function automaticChecks(): Promise<void> {
     await refreshConfigSettings();
     for (const root of vscode.workspace.workspaceFolders ?? []) {
       const id = root.uri.toString(), state = monitors.get(id);
       if (!state || queues.has(id) || state.due > Date.now()) continue;
+      closeAutoNotice?.();
       const generation = state.generation;
       const check = () => {
         if (disposed || !vscode.workspace.isTrusted || monitors.get(id) !== state || state.generation !== generation || !autoSettings(root).enabled) throw new vscode.CancellationError();
@@ -473,9 +475,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           state.status.tooltip = `${counts}. ${summary.waiting ? 'Some remote paths are waiting for two stable checks. ' : ''}Last checked: ${new Date().toLocaleTimeString()}. Click to review; no transfers have been applied.`;
           trace(`Automatic check: ${counts}; ${summary.waiting} remote paths awaiting stability.`);
           if (summary.fresh) {
-            void vscode.window.showInformationMessage(`WSFTP ? ${root.name}: ${counts}.`,'Review changes').then(answer => {
-              if (answer === 'Review changes' && !disposed && monitors.get(id) === state) void synchronizeMode('both',root).catch(report);
-            });
+            closeAutoNotice?.();
+            // Information messages with actions cannot be dismissed through the VS Code API.
+            // Completing notification progress closes the transient notice without retaining it.
+            void vscode.window.withProgress({location:vscode.ProgressLocation.Notification,
+              title:`WSFTP: ${root.name}: ${counts}. Click the WSFTP status bar item to review changes.`,cancellable:false},() => new Promise<void>(resolve => {
+              const close = () => {
+                clearTimeout(timer);
+                if (closeAutoNotice === close) closeAutoNotice = undefined;
+                resolve();
+              };
+              const timer = setTimeout(close,5000);
+              closeAutoNotice = close;
+            }));
           }
         },false);
       },true);
@@ -484,6 +496,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
   }
   command('wsftp.reviewAutoCheck',async (uri: vscode.Uri) => {
+    closeAutoNotice?.();
     const root = vscode.workspace.getWorkspaceFolder(uri);
     if (root) await synchronizeMode('both',root);
   });
@@ -514,7 +527,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   }));
   const checkLoop = new CheckLoop(automaticChecks,() => Math.max(1000,Math.min(15000,...[...monitors.values()].map(state => state.due-Date.now()))));
   context.subscriptions.push({dispose:() => {
-    disposed = true; checkLoop.dispose();
+    disposed = true; closeAutoNotice?.(); checkLoop.dispose();
     for (const state of monitors.values()) { state.generation++; state.status.dispose(); }
     monitors.clear();
   }});

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.39
+
+- Replace persistent automatic-check popups with transient notifications that close after five seconds or before the next scan, preventing stacked notices.
+- Keep synchronization review available through the workspace status-bar item.
+
 ## 0.1.38
 
 - Correct the three shortcuts to Ctrl+Alt+U, Ctrl+Alt+D, and Ctrl+Alt+S for root upload, root download, and bidirectional synchronization; remove Ctrl+Win bindings.
