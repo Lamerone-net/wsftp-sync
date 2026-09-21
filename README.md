@@ -6,15 +6,17 @@ A TypeScript extension for VS Code that transfers files over SFTP, FTP, and expl
 
 ## Local installation
 
-In VS Code, run **Extensions: Install from VSIX...**, select `wsftp-sync-0.1.38.vsix`, and open a trusted workspace. Alternatively:
+In VS Code, run **Extensions: Install from VSIX...**, select `wsftp-sync-0.1.44.vsix`, and open a trusted workspace. Alternatively:
 
 ```sh
-code --install-extension wsftp-sync-0.1.38.vsix
+code --install-extension wsftp-sync-0.1.44.vsix
 ```
 
 ## Configuration
 
-The only supported configuration location is `.vscode/wsftp-sync.json` inside each workspace folder. A `wsftp-sync.json` in the workspace root or any other directory is never loaded. Files named `ftp-sync.json` or `wsftp.json` are ignored. Settings are not merged. Use `remote_path` for the server root; the former `remotePath` key is no longer accepted. On activation, when workspace folders are added, or when an existing workspace gains a `.vscode` directory, the extension creates `.vscode/wsftp-sync.json` if missing, copying the bundled root-level example exactly. It never creates `.vscode` automatically or overwrites an existing configuration. The explicit configuration command can create the directory and opens the template-based configuration. The root-level [wsftp-sync.json](wsftp-sync.json) is an example only: it is automatically copied into an existing `.vscode` directory when needed. Fill in the host and credentials before connecting. The root-level example is transferable unless a configured filter excludes it.
+The only supported configuration location is `.vscode/wsftp-sync.json` inside each workspace folder. A `wsftp-sync.json` in the workspace root or any other directory is never loaded. An existing `.vscode/ftp-sync.json` is used only to seed a missing configuration; `wsftp.json` is ignored. Existing WSFTP configurations are never merged or overwritten. Use `remote_path` for the server root; the former `remotePath` key is no longer accepted. On activation, when workspace folders are added, or when an existing workspace gains a `.vscode` directory, the extension creates `.vscode/wsftp-sync.json` if missing, using the bundled root-level example and importing common settings from `.vscode/ftp-sync.json` when present. It never creates `.vscode` automatically or overwrites an existing configuration. The explicit configuration command can create the directory and opens the template-based configuration. The root-level [wsftp-sync.json](wsftp-sync.json) is an example only: it is automatically copied into an existing `.vscode` directory when needed. Fill in any missing host and credentials before connecting. The root-level example is transferable unless a configured filter excludes it.
+
+Legacy import copies supported same-name fields and maps `pass` to `password`, `remotePath` to `remote_path`, and `uploadOnSave` to `upload_on_save`. Current field names take precedence over aliases. Numeric port strings become numbers; `.` and `./` remote roots become `/`. Legacy `ignore` (or `ignored`) regex strings become `/pattern/` entries in `ignore_always`, replacing the example shared filters; an explicit `ignore_always` takes precedence. Empty lists and `false` values are preserved. Unsupported legacy options are omitted, and missing settings retain the template defaults. `discover` is always `true` in the imported configuration, even if the source says `false`. The legacy file is not modified. Invalid JSON or incompatible settings produce an import error and leave the new file uncreated so the source can be corrected and retried.
 
 Run **WSFTP: Create/open configuration**, enter your server settings, and use **WSFTP: Set credential** to store a password in VS Code SecretStorage. Stored credentials take precedence over JSON credentials and are associated with the workspace, protocol, host, port, username. **WSFTP: Remove saved credential** removes that stored value; a JSON credential can still be used. Manual operations can prompt for a temporary password. Automatic uploads never open credential or trust prompts, so perform a manual transfer first.
 
@@ -172,6 +174,8 @@ There are no hardcoded exclusions. Only `ignore_always`, `ignore_upload`, and `i
 ## Output logs
 
 Run the WSFTP log command (`wsftp.log`) to open **Output > WSFTP Sync**. Logs include timestamps, connection protocol, host, port, username, remote directory, timeout, directory scans, synchronization comparisons, transfer starts and results, exclusions, cancellations, and errors. Comparisons report whether source files are new, modified, or synchronized by size and CRC32. Temporary downloads during content verification are logged and do not overwrite workspace files.
+
+Manual transfers and synchronization show a connection progress notification with the target host and port while connecting and logging in. The notification closes when connection succeeds or fails; failures then show the specific error. Single-file transfers also show remote inspection and upload/download progress. Automatic checks and upload on save do not show these progress notifications.
 
 Connection and transfer diagnostics redact the configured password and session secret. Set `debug: true` to enable raw protocol diagnostics. Open **View > Debug Console** to see them; the extension writes directly through the VS Code Debug Console API, so an Extension Development Host is not required. Multiline server replies are preserved there. The Output channel also contains these diagnostics, with line breaks flattened. Debugging is read again for each operation; set it to `false` to disable protocol logging on the next connection. Logs contain server addresses and file paths, so review them before sharing.
 

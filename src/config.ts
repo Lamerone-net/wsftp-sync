@@ -2,7 +2,7 @@ import { initializeRegex } from './ignore';
 import { constants } from 'node:fs';
 import * as fs from 'node:fs/promises';
 import path from 'node:path';
-import { Config, parseConfig, UserError } from './core';
+import { Config, configFields, parseConfig, UserError } from './core';
 
 export class InactiveConfig extends Error {}
 
@@ -10,6 +10,49 @@ export async function ensureConfig(root: string, template: string): Promise<void
   const directory = path.join(root,'.vscode');
   try { if (!(await fs.stat(directory)).isDirectory()) return; }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
+  const destination = path.join(directory,'wsftp-sync.json');
+  try { await fs.lstat(destination); return; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  let legacyText: string | undefined;
+  try { legacyText = await fs.readFile(path.join(directory,'ftp-sync.json'),'utf8'); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new UserError('Unable to import .vscode/ftp-sync.json. Check file permissions.');
+  }
+  if (legacyText !== undefined) {
+    let legacy: Record<string, unknown>;
+    try {
+      legacy = JSON.parse(legacyText.replace(/^\uFEFF/,''));
+      if (!legacy || typeof legacy !== 'object' || Array.isArray(legacy)) throw new Error();
+    } catch { throw new UserError('Cannot import .vscode/ftp-sync.json: expected a valid JSON object. Check the JSON syntax.'); }
+    const value = JSON.parse(await fs.readFile(template,'utf8')) as Record<string, unknown>;
+    for (const field of configFields) {
+      if (field !== 'discover' && Object.hasOwn(legacy,field)) value[field] = legacy[field];
+    }
+    const aliases: Record<string,string> = {pass:'password',remotePath:'remote_path',uploadOnSave:'upload_on_save'};
+    for (const [oldName,newName] of Object.entries(aliases)) {
+      if (!Object.hasOwn(legacy,newName) && Object.hasOwn(legacy,oldName)) value[newName] = legacy[oldName];
+    }
+    if (typeof value.port === 'string' && /^\d+$/.test(value.port)) value.port = Number(value.port);
+    if (value.remote_path === '.' || value.remote_path === './') value.remote_path = '/';
+    if (!Object.hasOwn(legacy,'ignore_always')) {
+      const patterns = legacy.ignore ?? legacy.ignored;
+      if (patterns !== undefined) {
+        if (!Array.isArray(patterns) || !patterns.every(pattern => typeof pattern === 'string' && pattern.length > 0)) {
+          throw new UserError('Cannot import .vscode/ftp-sync.json: ignore/ignored must be a list of nonempty regular expressions.');
+        }
+        value.ignore_always = patterns.map(pattern => `/${pattern}/`);
+      }
+    }
+    value.discover = true;
+    await initializeRegex();
+    try {
+      // Empty credentials remain editable placeholders, as in the bundled template.
+      parseConfig({...value,host:value.host || 'placeholder',username:value.username || 'placeholder'});
+    } catch { throw new UserError('Cannot import .vscode/ftp-sync.json: incompatible settings. Check field types, port, absolute remote path, and ignore expressions.'); }
+    try { await fs.writeFile(destination,JSON.stringify(value,null,2)+'\n',{encoding:'utf8',flag:'wx'}); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
+    return;
+  }
   try { await fs.copyFile(template,path.join(directory,'wsftp-sync.json'),constants.COPYFILE_EXCL); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
 }

@@ -3,6 +3,7 @@ import * as fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { Config, excluded, remoteFile, safeRelative, UserError, forDirection } from './core';
+import { operationError, OperationStage } from './errors';
 import { SyncCache } from './cache';
 import { ChangeMonitor, CheckLoop } from './monitor';
 import { SyncMode, rulesForMode, scanTrees, buildSyncPlan, validateSnapshot, applySyncAction } from './sync';
@@ -135,6 +136,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await vscode.window.showWarningMessage(message,{modal:true,detail},'OK');
     } else await vscode.window.showInformationMessage(message,{modal:true,detail},'OK');
   }
+  async function activity<T>(title: string, enabled: boolean, action: (progress: vscode.Progress<{message?: string}>) => Promise<T>): Promise<T> {
+    if (!enabled) return action({report() {}});
+    return vscode.window.withProgress({location:vscode.ProgressLocation.Notification,title,cancellable:false},action);
+  }
   async function session(root: vscode.WorkspaceFolder, c: Config, action: (t: Transport, sessionLog: (message: string) => void) => Promise<void>, interactive = true): Promise<void> {
     if (!vscode.workspace.isTrusted) throw new Error('Workspace is not trusted.');
     if (c.discover) { if (!interactive) throw new UserError('Automatic check skipped: complete protocol discovery manually first.'); await discover(root,c); return; }
@@ -158,10 +163,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       writeLog(text);
       if (c.debug) vscode.debug.activeDebugConsole.appendLine(`${new Date().toISOString()} ${text}`);
     };
-    async function operation<T>(label: string, action: () => Promise<T>): Promise<T> {
+    async function operation<T>(label: string, action: () => Promise<T>, stage?: OperationStage): Promise<T> {
       trace(`${label}: started`);
-      try { const result = await action(); trace(`${label}: completed`); return result; }
-      catch (error) { trace(`${label}: ERROR - ${error instanceof Error ? error.message : String(error)}`); throw error; }
+      try {
+        const result = stage === 'connect'
+          ? await activity(`WSFTP: Connection to ${c.host}:${c.port}`,interactive,async progress => {
+            progress.report({message:`Connecting and logging in (${c.protocol.toUpperCase()})...`});
+            return action();
+          })
+          : await action();
+        trace(`${label}: completed`);
+        return result;
+      }
+      catch (error) {
+        trace(`${label}: ERROR - ${error instanceof Error ? error.message : String(error)}`);
+        if (error instanceof vscode.CancellationError) throw error;
+        throw stage ? operationError(stage,error) : error;
+      }
     }
     const connected = await operation(`Connection; user=${c.username}; remote directory=${c.remote_path}; timeout=${c.timeout} ms`, () => connect(c,secret,async hash => {
       if (c.hostKeySha256) return hash.toLowerCase() === c.hostKeySha256.toLowerCase();
@@ -172,20 +190,25 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const accept = await vscode.window.showWarningMessage(`First SFTP connection to ${c.host}:${c.port}. Verify the SHA256 fingerprint (hex) with the server administrator:\n${hash}`,{ modal:true },'Trust');
       if (accept !== 'Trust') return false;
       await context.globalState.update(hostKey,hash); return true;
-    },trace,identity => trustTLS(c,identity,interactive)));
+    },trace,identity => trustTLS(c,identity,interactive)), 'connect');
     const t: Transport = {
       list: remote => operation(`Reading remote directory ${remote}`, async () => {
         const entries = await connected.list(remote);
         trace(`${remote}: ${entries.length} entries read`);
         return entries;
-      }),
-      upload: (local,remote) => operation(`Upload ${local} -> ${remote}`, () => connected.upload(local,remote)),
-      download: (remote,local) => operation(`Download ${remote} -> ${local}`, () => connected.download(remote,local)),
-      mkdir: remote => operation(`Create remote directory ${remote}`, () => connected.mkdir(remote)),
-      remove: (remote,directory) => operation(`Delete remote ${directory ? 'directory' : 'file'} ${remote}`, () => connected.remove(remote,directory)),
-      close: () => operation('Disconnect', () => connected.close())
+      }, 'list'),
+      upload: (local,remote) => operation(`Upload ${local} -> ${remote}`, () => connected.upload(local,remote), 'upload'),
+      download: (remote,local) => operation(`Download ${remote} -> ${local}`, () => connected.download(remote,local), 'download'),
+      mkdir: remote => operation(`Create remote directory ${remote}`, () => connected.mkdir(remote), 'mkdir'),
+      remove: (remote,directory) => operation(`Delete remote ${directory ? 'directory' : 'file'} ${remote}`, () => connected.remove(remote,directory), 'remove'),
+      close: () => operation('Disconnect', () => connected.close(), 'close')
     };
-    try { await operation('Operation', () => action(t,trace)); } finally { await t.close(); }
+    let failed = false;
+    try { await operation('Operation', () => action(t,trace)); }
+    catch (error) { failed = true; throw error; }
+    finally {
+      try { await t.close(); } catch (error) { if (!failed) throw error; }
+    }
   }
   async function transfer(uri: vscode.Uri | undefined, direction: 'upload' | 'download', automatic = false): Promise<void> {
     uri ??= vscode.window.activeTextEditor?.document.uri;
@@ -204,7 +227,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         if (vscode.workspace.textDocuments.some(d => d.uri.fsPath === local && d.isDirty)) throw new Error('Save or close the modified file before downloading.');
         if (await vscode.window.showWarningMessage(`Overwrite local file ${relative}?`,{modal:true},'Download') !== 'Download') { writeLog(`Download cancelled: ${relative}`); return; }
       }
-      await session(root,c,async (t,writeLog) => {
+      await session(root,c,async (t,writeLog) => activity(`WSFTP: ${direction === 'upload' ? 'Upload' : 'Download'} ${relative}`,!automatic,async progress => {
+        progress.report({message:'Checking remote file...'});
         writeLog(`Checking remote file: ${relative}`);
         const remote = await inspectRemote(t,c,relative);
         writeLog(`${relative}: ${remote ? 'remote file exists' : 'remote file is missing'}`);
@@ -212,6 +236,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         const cache = await cacheFor(root,c);
         cache.forget(relative);
         await cache.save();
+        progress.report({message:direction === 'upload' ? 'Uploading file...' : 'Downloading file...'});
         if (direction === 'upload') await t.upload(local,remoteFile(c,relative));
         else await download(t,c,root.uri.fsPath,relative);
         writeLog(`${direction} completed: ${relative}`);
@@ -219,7 +244,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           showTransferStatus(direction,relative);
         }
         if (!automatic) void vscode.window.showInformationMessage(`WSFTP: ${direction} completed.`);
-      },!automatic);
+      }),!automatic);
     });
   }
   function command(id: string, action: (...args: any[]) => Promise<unknown> | unknown): void {

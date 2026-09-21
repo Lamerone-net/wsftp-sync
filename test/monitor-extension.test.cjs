@@ -38,8 +38,9 @@ test('automatic checks notify after stability, never apply actions, stop when di
         withProgress:async (options,fn) => {
           const notice = options.title.startsWith('WSFTP: project:') ? {message:options.title,closed:false} : undefined;
           if (notice) notifications.push(notice);
-          await fn({report(){}},{isCancellationRequested:false});
+          const result = await fn({report(){}},{isCancellationRequested:false});
           if (notice) notice.closed=true;
+          return result;
         }}
     };
     const filename = path.resolve(__dirname,'../dist/extension.js'); const realRequire = createRequire(filename);

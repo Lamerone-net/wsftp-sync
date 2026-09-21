@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.1.44
+
+- Show an immediate connection progress notification with the target host and port for manual transfers and synchronization, closing it before reporting connection failures.
+- Show remote inspection and transfer progress for single-file operations while keeping background checks and upload on save quiet.
+
+## 0.1.43
+
+- Explain that a login rejection can come from an incorrect but reachable host, and prompt users to verify the hostname/IP before credentials.
+- Require explicit authentication failure evidence and prioritize secure-connection errors over authentication wording.
+
+## 0.1.42
+
+- Distinguish unknown hostnames, temporary DNS failures, unreachable hosts/IP addresses, refused connections, and connection timeouts with specific troubleshooting hints.
+
+## 0.1.41
+
+- Seed new workspace configurations from .vscode/ftp-sync.json, importing common settings and converting legacy ignore expressions while keeping discovery enabled.
+- Preserve existing configurations and the legacy source; report malformed or incompatible imports without exposing credentials.
+
+## 0.1.40
+
+- Report specific connection, login, secure connection, remote listing, transfer, directory creation, deletion, and disconnect failures with relevant troubleshooting hints.
+- Preserve the original operation failure when disconnect also fails; keep server diagnostics in the credential-redacted log.
+
 ## 0.1.39
 
 - Replace persistent automatic-check popups with transient notifications that close after five seconds or before the next scan, preventing stacked notices.

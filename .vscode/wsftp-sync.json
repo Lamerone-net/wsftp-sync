@@ -2,7 +2,7 @@
   "username": "",
   "password": "",
   "host": "",
-  "remotePath": "/",
+  "remote_path": "/",
   "port": 21,
   "upload_on_save": true,
   "discover": true,
@@ -17,12 +17,8 @@
     "/(?:^|/)id_(?:rsa|ed25519)$/"
   ],
   "ignore_upload": [
-    "skip_download_dir",
-    "skip_download_file.php"
   ],
   "ignore_download": [
-    "skip_upload_dir",
-    "skip_upload_file.php"
   ],
   "debug": true
 }

@@ -204,3 +204,75 @@ test('remote_path replaces remotePath and preserves path validation', () => {
   for (const value of ['relative','/site/../other',123,null]) assert.throws(() => parseConfig({...config,remote_path:value}),/remote_path/);
   assert.equal(parseConfig({host:'example',username:'user',discover:true,port:21}).remote_path,'/');
 });
+
+test('legacy config seeds a missing WSFTP config with discovery and working regex filters', async () => {
+  const { ensureConfig } = require('../dist/config');
+  const root = await fs.mkdtemp(path.join(os.tmpdir(),'wsftp-import-'));
+  const template = path.join(__dirname,'../wsftp-sync.json');
+  try {
+    await fs.mkdir(path.join(root,'.vscode'));
+    const source = path.join(root,'.vscode','ftp-sync.json');
+    const destination = path.join(root,'.vscode','wsftp-sync.json');
+    const original = JSON.stringify({host:'localhost',username:'legacy',password:'secret',port:'2121',remotePath:'/site',uploadOnSave:false,passive:false,debug:false,protocol:'ftp',discover:false,ignore:['\\.vscode','(^|/)cache/','\\.log$'],privateKeyPath:null,generatedFiles:{}});
+    await fs.writeFile(source,original);
+    await Promise.all([ensureConfig(root,template),ensureConfig(root,template)]);
+    const imported = JSON.parse(await fs.readFile(destination,'utf8'));
+    assert.equal(imported.discover,true);
+    assert.equal(imported.username,'legacy');
+    assert.equal(imported.password,'secret');
+    assert.equal(imported.port,2121);
+    assert.equal(imported.remote_path,'/site');
+    assert.equal(imported.upload_on_save,false);
+    assert.equal(imported.passive,false);
+    assert.equal(imported.debug,false);
+    assert.equal(imported.protocol,'ftp');
+    assert.ok(!('privateKeyPath' in imported));
+    assert.ok(!('generatedFiles' in imported));
+    const config = await readConfig(root);
+    for (const name of ['.vscode/settings.json','sub/cache/file.txt','sub/error.log']) assert.equal(excluded(name,config.exclude),true);
+    assert.equal(excluded('sub/file.txt',config.exclude),false);
+    assert.equal(await fs.readFile(source,'utf8'),original);
+    await fs.writeFile(source,'invalid json');
+    await ensureConfig(root,template);
+    assert.deepEqual(JSON.parse(await fs.readFile(destination,'utf8')),imported);
+  } finally { await fs.rm(root,{recursive:true,force:true}); }
+});
+
+test('legacy aliases, defaults, explicit empty filters and field precedence are preserved', async () => {
+  const { ensureConfig } = require('../dist/config');
+  const root = await fs.mkdtemp(path.join(os.tmpdir(),'wsftp-alias-'));
+  try {
+    await fs.mkdir(path.join(root,'.vscode'));
+    const source = path.join(root,'.vscode','ftp-sync.json');
+    const destination = path.join(root,'.vscode','wsftp-sync.json');
+    for (const legacy of [
+      {username:'user',host:'localhost',pass:'secret',remotePath:'./',ignored:[]},
+      {username:'user',host:'localhost',password:'preferred',pass:'other',remote_path:'/preferred',remotePath:'/other',upload_on_save:false,uploadOnSave:true,ignore_always:[],ignore:['ignored'],ignore_upload:[],ignore_download:[]}
+    ]) {
+      await fs.writeFile(source,JSON.stringify(legacy));
+      await ensureConfig(root,path.join(__dirname,'../wsftp-sync.json'));
+      const value = JSON.parse(await fs.readFile(destination,'utf8'));
+      assert.equal(value.password,legacy.password ?? legacy.pass);
+      assert.equal(value.remote_path,legacy.remote_path ?? '/');
+      assert.deepEqual(value.ignore_always,[]);
+      assert.equal(value.discover,true);
+      assert.equal(value.port,21);
+      assert.equal(value.upload_on_save,legacy.upload_on_save ?? true);
+      await readConfig(root);
+      await fs.unlink(destination);
+    }
+  } finally { await fs.rm(root,{recursive:true,force:true}); }
+});
+
+test('invalid legacy imports fail without creating a file or revealing credentials', async () => {
+  const { ensureConfig } = require('../dist/config');
+  const root = await fs.mkdtemp(path.join(os.tmpdir(),'wsftp-invalid-import-'));
+  try {
+    await fs.mkdir(path.join(root,'.vscode'));
+    for (const text of ['{"password":"secret",}', 'null','[]',JSON.stringify({...base,ignore:[3]}),JSON.stringify({...base,ignore:['[']}),JSON.stringify({...base,port:'invalid'})]) {
+      await fs.writeFile(path.join(root,'.vscode','ftp-sync.json'),text);
+      await assert.rejects(ensureConfig(root,path.join(__dirname,'../wsftp-sync.json')),error => error instanceof UserError && /import/.test(error.message) && !error.message.includes('secret'));
+      await assert.rejects(fs.stat(path.join(root,'.vscode','wsftp-sync.json')),{code:'ENOENT'});
+    }
+  } finally { await fs.rm(root,{recursive:true,force:true}); }
+});

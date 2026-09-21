@@ -44,6 +44,12 @@ test('FTP and explicit FTPS round trips; untrusted TLS certificate rejected', {t
     assert.ok(diagnostics.some(line => /< 220/.test(line)));
     assert.ok(diagnostics.some(line => line.includes('> PASS [REDACTED]')));
     assert.ok(diagnostics.every(line => !line.includes('test')));
+    await assert.rejects(connect(c,'wrong-password',async () => true), error => {
+      const diagnostic = require('../dist/errors').operationError('connect',error);
+      assert.match(diagnostic.message,/^Login failed\./);
+      assert.match(diagnostic.message,/hostname\/IP address first/);
+      return true;
+    });
     const quiet = [];
     const quietTransport = await connect(c,'test',async () => true,message => quiet.push(message));
     await quietTransport.close();
