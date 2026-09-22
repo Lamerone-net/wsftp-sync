@@ -16,14 +16,14 @@ async function fixture(run) {
   for (let i=0;i<40;i++) await fs.writeFile(path.join(root,'assets','css',`${String(i).padStart(2,'0')}.txt`),'123456789');
   const cacheFile = path.join(base,'cache.json');
   const c = parseConfig({protocol:'ftp',host:'example',username:'user',remote_path:'/'});
-  const state = {lists:0,reads:0,cancel:false,changed:false,symlink:false,afterRead:() => {}};
+  const state = {lists:0,reads:0,cancel:false,changed:false,changedFile:'00.txt',symlink:false,afterRead:() => {}};
   const t = {
     list:async remote => {
       state.lists++;
       return Promise.all((await fs.readdir(path.join(root,remote),{withFileTypes:true})).map(async item => {
         const stat = await fs.stat(path.join(root,remote,item.name));
         return {name:item.name,directory:item.isDirectory(),symlink:state.symlink && item.name==='assets',size:stat.size,
-          mtime:stat.mtimeMs+(state.changed && item.name==='00.txt' ? 10000 : 0)};
+          mtime:stat.mtimeMs+(state.changed && item.name===state.changedFile ? 10000 : 0)};
       }));
     },
     readTo:async (remote,sink) => {
@@ -52,7 +52,7 @@ test('40 nested files need 12 validation listings instead of 240; repeat sync re
   assert.equal(f.state.lists,0);
 }));
 
-test('changed files and replaced symlink parents reject the entire unverified batch', async () => {
+test('changed files and replaced symlink parents never receive a verified hash or agreement', async () => {
   for (const mutation of ['changed','symlink']) await fixture(async f => {
     f.state.afterRead = () => { if (f.state.reads===3) f.state[mutation]=true; };
     await assert.rejects(buildSyncPlan(f.t,f.root,f.c,'local',f.snapshot,f.cache,f.check),/changed|symbolic link/);
@@ -60,8 +60,72 @@ test('changed files and replaced symlink parents reject the entire unverified ba
     const file = 'assets/css/00.txt';
     assert.equal(cache.get('remote',file,f.snapshot.remote.get(file)),undefined);
     assert.equal(cache.baseline(file),undefined);
+    if (mutation==='changed') {
+      const unchanged='assets/css/01.txt';
+      assert.ok(cache.get('remote',unchanged,f.snapshot.remote.get(unchanged)));
+      f.state.afterRead=() => {};
+      f.state.reads=0;
+      const fresh=await scanTrees(f.t,f.root,f.c,f.check);
+      assert.deepEqual(await buildSyncPlan(f.t,f.root,f.c,'local',fresh,cache,f.check),[]);
+      assert.equal(f.state.reads,9,'Only the changed file and eight unfinished files need content reads');
+    }
   });
 });
+
+test('a change in the final batch preserves all 39 unchanged files across reload', async () => fixture(async f => {
+  f.state.changedFile='32.txt';
+  f.cache.acknowledge('assets/css/32.txt','9:deadbeef');
+  f.state.afterRead=() => { if (f.state.reads===40) f.state.changed=true; };
+  await assert.rejects(buildSyncPlan(f.t,f.root,f.c,'local',f.snapshot,f.cache,f.check),/assets\/css\/32\.txt/);
+  const saved=new SyncCache(f.cacheFile); await saved.load();
+  assert.equal(saved.baseline('assets/css/32.txt'),'9:deadbeef','Retain the previous baseline for conflict detection');
+  for (let i=0;i<40;i++) {
+    const relative=`assets/css/${String(i).padStart(2,'0')}.txt`;
+    assert.equal(Boolean(saved.get('remote',relative,f.snapshot.remote.get(relative))),i!==32,relative);
+  }
+  assert.ok(saved.get('local','assets/css/32.txt',f.snapshot.local.get('assets/css/32.txt')),'Unchanged local hash is retained');
+  f.state.afterRead=() => {}; f.state.reads=0;
+  const fresh=await scanTrees(f.t,f.root,f.c,f.check);
+  assert.deepEqual(await buildSyncPlan(f.t,f.root,f.c,'local',fresh,saved,f.check),[]);
+  assert.equal(f.state.reads,1);
+}));
+
+test('size changes during a download preserve preceding pending files', async () => fixture(async f => {
+  const { Readable } = require('node:stream');
+  const original=f.t.readTo;
+  f.t.readTo=async (remote,sink) => {
+    if (remote.endsWith('/03.txt')) { await pipeline(Readable.from([Buffer.from('short')]),sink); return; }
+    await original(remote,sink);
+  };
+  await assert.rejects(buildSyncPlan(f.t,f.root,f.c,'local',f.snapshot,f.cache,f.check),/size changed.*03\.txt/);
+  const saved=new SyncCache(f.cacheFile); await saved.load();
+  for (const name of ['00','01','02']) {
+    const relative=`assets/css/${name}.txt`;
+    assert.ok(saved.get('remote',relative,f.snapshot.remote.get(relative)));
+  }
+  f.t.readTo=original; f.state.reads=0;
+  assert.deepEqual(await buildSyncPlan(f.t,f.root,f.c,'local',f.snapshot,saved,f.check),[]);
+  assert.equal(f.state.reads,37);
+}));
+
+test('transfer-only comparisons also resume only the changed final-batch file', async () => fixture(async f => {
+  const { planSync } = require('../dist/files');
+  const files = tree => new Map([...tree].filter(([,entry]) => !entry.directory));
+  f.state.changedFile='32.txt';
+  f.state.afterRead=() => { if (f.state.reads===40) f.state.changed=true; };
+  await assert.rejects(planSync(f.t,f.c,f.root,files(f.snapshot.local),files(f.snapshot.remote),'upload',f.check,() => {},f.cache),/32\.txt/);
+  const saved=new SyncCache(f.cacheFile); await saved.load();
+  f.state.afterRead=() => {}; f.state.reads=0;
+  const fresh=await scanTrees(f.t,f.root,f.c,f.check);
+  assert.deepEqual(await planSync(f.t,f.c,f.root,files(fresh.local),files(fresh.remote),'upload',f.check,() => {},saved),[]);
+  assert.equal(f.state.reads,1);
+}));
+
+test('cache save failures are reported when verification is interrupted', async () => fixture(async f => {
+  f.state.afterRead=() => { if (f.state.reads===3) f.state.changed=true; };
+  f.cache.checkpoint=async force => { if (force) throw new Error('Disk full'); };
+  await assert.rejects(buildSyncPlan(f.t,f.root,f.c,'local',f.snapshot,f.cache,f.check),/cache progress could not be saved/);
+}));
 
 test('cancellation saves validated batches and resumes without downloading them again', async () => fixture(async f => {
   f.state.afterRead = () => { if (f.state.reads===35) f.state.cancel=true; };

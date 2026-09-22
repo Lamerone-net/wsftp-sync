@@ -60,9 +60,9 @@ export class SyncCache {
     this.revision++;
   }
 
-  invalidate(relative: string): void {
-    if (this.entries.delete('local:'+relative)) this.revision++;
-    if (this.entries.delete('remote:'+relative)) this.revision++;
+  invalidate(relative: string, side?: Side): void {
+    if (side !== 'remote' && this.entries.delete('local:'+relative)) this.revision++;
+    if (side !== 'local' && this.entries.delete('remote:'+relative)) this.revision++;
   }
 
   prune(local: Map<string, Entry>, remote: Map<string, Entry>, c: Config, scope: string): void {

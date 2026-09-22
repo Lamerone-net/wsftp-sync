@@ -117,14 +117,25 @@ test('preview revalidation blocks changed files and new directory children befor
   await f.put(f.remote,'obsolete/file','old');
   let p = await f.plan('local');
   await f.put(f.local,'obsolete/file','new source');
-  await assert.rejects(f.apply(p),/changed after preview/);
+  await assert.rejects(f.apply(p),/Local path changed after preview: obsolete/);
   assert.equal(await fs.readFile(path.join(f.remote,'obsolete/file'),'utf8'),'old');
   await fs.mkdir(path.join(f.remote,'empty'));
   p = await f.plan('local');
   const action = p.actions.find(a => a.relative === 'empty');
   await f.put(f.remote,'empty/new-child','preserve');
-  await assert.rejects(applySyncAction(f.t,f.local,p.rules,action,p.snapshot,f.cache,check),/no longer empty/);
+  await assert.rejects(applySyncAction(f.t,f.local,p.rules,action,p.snapshot,f.cache,check),/no longer empty: empty/);
   assert.equal(await fs.readFile(path.join(f.remote,'empty/new-child'),'utf8'),'preserve');
+}));
+
+test('content verification errors identify the side and relative file path', async () => fixture(async f => {
+  const { fingerprint } = require('../dist/sync');
+  const relative='assets/changed.txt';
+  await f.put(f.local,relative,'before'); await f.put(f.remote,relative,'before');
+  const snapshot=await scanTrees(f.t,f.local,f.c,check);
+  await f.put(f.remote,relative,'after remote');
+  await assert.rejects(fingerprint(f.t,f.local,f.c,'remote',relative,snapshot.remote.get(relative),f.cache,check),/Remote file changed during content verification: assets\/changed\.txt/);
+  await f.put(f.local,relative,'after local');
+  await assert.rejects(fingerprint(f.t,f.local,f.c,'local',relative,snapshot.local.get(relative),f.cache,check),/Local file changed during content verification: assets\/changed\.txt/);
 }));
 
 test('failed upload drops old agreement and does not turn partial remote content into an automatic download', async () => fixture(async f => {

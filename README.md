@@ -6,10 +6,10 @@ A TypeScript extension for VS Code that transfers files over SFTP, FTP, and expl
 
 ## Local installation
 
-In VS Code, run **Extensions: Install from VSIX...**, select `wsftp-sync-0.1.51.vsix`, and open a trusted workspace. Alternatively:
+In VS Code, run **Extensions: Install from VSIX...**, select `wsftp-sync-0.1.53.vsix`, and open a trusted workspace. Alternatively:
 
 ```sh
-code --install-extension wsftp-sync-0.1.51.vsix
+code --install-extension wsftp-sync-0.1.53.vsix
 ```
 
 ## Configuration
@@ -165,7 +165,7 @@ Modification-time (`mtime`) differences between local and remote do not determin
 
 CRC32 is calculated incrementally as remote content arrives, without writing comparison copies to disk or loading whole files into memory. Local hashing and remote reading overlap, and local and remote tree scans overlap; commands on the same FTP connection remain sequential. Empty files are verified from their metadata without a content transfer. CRC32 can have collisions and is not a cryptographic guarantee of equality. Synchronization downloads preserve remote timestamps when available.
 
-Remote verification reuses directory listings within batches of up to 32 files from the same directory, then reads fresh listings to validate file metadata and parent paths before committing hashes and shared baselines. Long comparisons checkpoint verified progress at roughly ten-second boundaries between files; cancellation or failure saves previously validated batches and discards the unverified batch. Restarted comparisons reuse saved hashes when metadata still matches. During initial synchronization, large remote reads report byte progress.
+Remote verification reuses directory listings within batches of up to 32 files from the same directory, then reads fresh listings to validate file metadata and parent paths before committing hashes and shared baselines. Long comparisons checkpoint verified progress at roughly ten-second boundaries between files; cancellation or failure saves individually verified files. A changed remote file is excluded from the cache, while other files in the same batch are validated and retained; its prior synchronization baseline remains available for conflict detection. Restarted comparisons scan directory metadata again and reuse saved hashes when metadata still matches, reading content only for changed or unfinished files. Missing timestamps still require content verification. During initial synchronization, large remote reads report byte progress.
 
 The first comparison still needs to receive uncached content; subsequent scans list remote directories but avoid downloading unchanged files for verification. Changes that preserve both size and mtime require **WSFTP: Clear synchronization cache** followed by synchronization to be detected. Cancelled previews keep differences pending. The new modes record successful transfers in the cache and synchronization history. Legacy transfer-only commands invalidate affected cache entries before writing. Clearing the cache preserves synchronization history, so a full verification can still identify which side changed. Cancelled previews never acknowledge differing contents. Bidirectional comparison may need remote hashes even for different-size files to identify the changed side.
 

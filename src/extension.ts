@@ -360,12 +360,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             const baseline = local.get(change.relative);
             let current;
             try { current = await fs.stat(file); } catch(e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
-            if (Boolean(current) !== Boolean(baseline) || (current && baseline && (current.size !== baseline.size || current.mtimeMs !== baseline.mtime))) throw new UserError('Local file changed after preview. Run synchronization again.');
+            if (Boolean(current) !== Boolean(baseline) || (current && baseline && (current.size !== baseline.size || current.mtimeMs !== baseline.mtime))) throw new UserError(`Local file changed after preview: ${change.relative}. Run synchronization again.`);
             if (vscode.workspace.textDocuments.some(d => d.uri.fsPath === file && d.isDirty)) throw new UserError('An open file has unsaved changes. Save before synchronizing.');
             // Revalidate the remote file after the user has reviewed the preview.
             const previous = remote.get(change.relative);
             const now = await inspectRemote(t,c,change.relative);
-            if (Boolean(now) !== Boolean(previous) || (now && previous && (now.size !== previous.size || now.mtime !== previous.mtime))) throw new UserError('Remote file changed after preview. Run synchronization again.');
+            if (Boolean(now) !== Boolean(previous) || (now && previous && (now.size !== previous.size || now.mtime !== previous.mtime))) throw new UserError(`Remote file changed after preview: ${change.relative}. Run synchronization again.`);
             if (direction === 'upload') await t.upload(file,remoteFile(c,change.relative));
             else await download(t,c,root.uri.fsPath,change.relative,change.source.mtime);
             completed++;

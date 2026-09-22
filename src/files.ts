@@ -100,7 +100,7 @@ export async function planSync(t: Transport, c: Config, root: string, local: Map
       const expectedRemote = remote.get(change.relative)!;
       const stableLocal = async () => {
         const current = await fs.stat(await localPath(root,change.relative));
-        if (current.size !== expectedLocal.size || current.mtimeMs !== expectedLocal.mtime) throw new UserError('Local file changed during content verification. Run synchronization again.');
+        if (current.size !== expectedLocal.size || current.mtimeMs !== expectedLocal.mtime) throw new UserError(`Local file changed during content verification: ${change.relative}. Run synchronization again.`);
       };
       const cachedLocal = cache?.get('local',change.relative,expectedLocal);
       const cachedRemote = cache?.get('remote',change.relative,expectedRemote);
@@ -131,8 +131,9 @@ export async function planSync(t: Transport, c: Config, root: string, local: Map
     await observations.checkpoint(true);
     return changes;
   } catch (error) {
-    // Only fully verified batches and local hashes have reached the cache.
-    try { await observations.checkpoint(true); } catch { /* Preserve the comparison failure. */ }
+    // Only individually verified remote files and valid local hashes reach the cache.
+    try { await observations.checkpoint(true); }
+    catch { throw new UserError('Content verification stopped and cache progress could not be saved. Check extension storage permissions and free disk space, then run synchronization again.'); }
     throw error;
   }
 }

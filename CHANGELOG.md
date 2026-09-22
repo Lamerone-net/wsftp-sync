@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.53
+
+- Include the affected relative file or directory path in content-verification, preview-revalidation, and transfer-change errors, identifying the local or remote side where applicable.
+
+## 0.1.52
+
+- Preserve individually verified files from a comparison batch when another remote file changes, including the final batch and changes detected before hashing the next file.
+- Invalidate only the changed remote hash, retain local hashes and prior synchronization baselines, and reuse unchanged verified content after restarting synchronization.
+- Identify the changed relative path in verification errors and report cache persistence failures instead of silently discarding them.
+
 ## 0.1.51
 
 - Batch remote content verification by directory (up to 32 files), reuse directory listings within each batch, and revalidate files and parent paths with fresh listings before committing hashes or shared baselines.

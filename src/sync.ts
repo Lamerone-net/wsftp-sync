@@ -80,13 +80,13 @@ export async function fingerprint(t: Transport, root: string, c: Config, side: '
   if (hash !== undefined) return `${entry.size}:${hash}`;
   const validate = async () => {
     const now = side === 'local' ? await currentLocal(root,relative) : await currentRemote(t,c,relative);
-    if (!same(entry,now)) throw new UserError('File changed during content verification. Run synchronization again.');
+    if (!same(entry,now)) throw new UserError(`${side === 'local' ? 'Local' : 'Remote'} file changed during content verification: ${relative}. Run synchronization again.`);
   };
   await validate();
   let crc: string;
   if (side === 'remote') {
     const result = await remoteCRC32(t,remoteFile(c,relative),check);
-    if (result.size !== entry.size) throw new UserError('Remote file size changed during content verification. Run synchronization again.');
+    if (result.size !== entry.size) throw new UserError(`Remote file size changed during content verification: ${relative}. Run synchronization again.`);
     crc = result.hash;
   } else crc = await crc32File(await localPath(root,relative),check);
   await validate(); check();
@@ -172,7 +172,8 @@ export async function buildSyncPlan(t: Transport, root: string, c: Config, mode:
     await comparison.flush();
     await cache.checkpoint(true);
   } catch (error) {
-    try { await cache.checkpoint(true); } catch { /* Preserve the comparison failure. */ }
+    try { await cache.checkpoint(true); }
+    catch { throw new UserError('Content verification stopped and cache progress could not be saved. Check extension storage permissions and free disk space, then run synchronization again.'); }
     throw error;
   }
   // Never delete an ancestor of ignored content or a conflict. Directories are
@@ -191,7 +192,11 @@ export async function buildSyncPlan(t: Transport, root: string, c: Config, mode:
 export async function validateSnapshot(t: Transport, root: string, c: Config, snapshot: Snapshot, check: () => void): Promise<void> {
   const now = await scanTrees(t,root,c,check);
   for (const side of ['local','remote'] as const) {
-    if (snapshot[side].size !== now[side].size || [...snapshot[side]].some(([p,e]) => !same(e,now[side].get(p)))) throw new UserError('Files changed after preview. Run synchronization again.');
+    for (const relative of new Set([...snapshot[side].keys(),...now[side].keys()])) {
+      if (!same(snapshot[side].get(relative),now[side].get(relative))) {
+        throw new UserError(`${side === 'local' ? 'Local' : 'Remote'} path changed after preview: ${relative}. Run synchronization again.`);
+      }
+    }
   }
 }
 
@@ -200,12 +205,13 @@ export async function applySyncAction(t: Transport, root: string, c: Config, act
   const {relative,kind,directory} = action;
   if (kind === 'conflict') return;
   const local = await currentLocal(root,relative), remote = await currentRemote(t,c,relative);
-  if (!same(snapshot.local.get(relative),local) || !same(snapshot.remote.get(relative),remote)) throw new UserError('File changed after preview. Run synchronization again.');
+  if (!same(snapshot.local.get(relative),local)) throw new UserError(`Local file changed after preview: ${relative}. Run synchronization again.`);
+  if (!same(snapshot.remote.get(relative),remote)) throw new UserError(`Remote file changed after preview: ${relative}. Run synchronization again.`);
   const file = await localPath(root,relative), remote_path = remoteFile(c,relative);
   if (kind === 'delete-local' || kind === 'delete-remote') {
     if (directory) {
       const contents = kind === 'delete-local' ? await fs.readdir(file) : (await t.list(remote_path)).filter(e => e.name !== '.' && e.name !== '..');
-      if (contents.length) throw new UserError('Directory is no longer empty; deletion stopped. Run synchronization again.');
+      if (contents.length) throw new UserError(`Directory is no longer empty: ${relative}; deletion stopped. Run synchronization again.`);
     }
     if (kind === 'delete-local') { if (directory) await fs.rmdir(file); else await fs.unlink(file); snapshot.local.delete(relative); }
     else { await t.remove(remote_path,directory); snapshot.remote.delete(relative); }
@@ -223,7 +229,7 @@ export async function applySyncAction(t: Transport, root: string, c: Config, act
     else await download(t,c,root,relative,remote!.mtime);
     const afterLocal = await currentLocal(root,relative), afterRemote = await currentRemote(t,c,relative);
     const afterSource = sourceSide === 'local' ? afterLocal : afterRemote;
-    if (!same(source,afterSource) || !afterLocal || !afterRemote || afterLocal.size !== afterRemote.size) throw new UserError('File changed during transfer. Run synchronization again.');
+    if (!same(source,afterSource) || !afterLocal || !afterRemote || afterLocal.size !== afterRemote.size) throw new UserError(`File changed during transfer: ${relative}. Run synchronization again.`);
     cache.acknowledge(relative,hash);
     cache.set('local',relative,afterLocal,hash.split(':')[1]);
     cache.set('remote',relative,afterRemote,hash.split(':')[1]);
