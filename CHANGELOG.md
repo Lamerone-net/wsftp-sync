@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.50
+
+- Replace the WSFTP Sync Output content with the latest status line when debug is false, avoiding manual scrolling; keep appending full diagnostics when debug is true.
+
 ## 0.1.49
 
 - Use compact local-time [HH:mm:ss] log timestamps and remove the repeated workspace, protocol, host, and port prefix from session messages.

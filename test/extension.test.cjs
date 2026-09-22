@@ -24,7 +24,7 @@ test('saved documents and keyboard upload command use wsftp-sync configuration; 
     let discoveredProtocol = 'ftps';
     const information = [];
     const progressNotices = [];
-    const outputShows = [], outputLines = [];
+    const outputShows = [], outputLines = [], outputReplacements = [];
     let connectionStarted, connectionGate;
     const remoteFiles = new Map();
     const vscode = {
@@ -36,7 +36,7 @@ test('saved documents and keyboard upload command use wsftp-sync configuration; 
         progressNotices.push(notice);
         try { return await action({report:update => notice.messages.push(update.message)},{isCancellationRequested:false}); }
         finally { notice.closed = true; }
-      },showWarningMessage:async (title,options,yes,no) => {previews.push({title,...options,yes,no});return apply ? yes : no;},createOutputChannel:name => ({appendLine:line => outputLines.push(line),show:preserveFocus => outputShows.push({name,preserveFocus}),dispose(){}}),showErrorMessage:message => {assert.ok(progressNotices.every(notice => notice.closed));errors.push(message);},showInformationMessage:(title,options) => information.push({title,...options}),activeTextEditor:{document:{uri}}},
+      },showWarningMessage:async (title,options,yes,no) => {previews.push({title,...options,yes,no});return apply ? yes : no;},createOutputChannel:name => ({appendLine:line => outputLines.push(line),replace:line => { outputReplacements.push(line); outputLines.splice(0,outputLines.length,line.trimEnd()); },show:preserveFocus => outputShows.push({name,preserveFocus}),dispose(){}}),showErrorMessage:message => {assert.ok(progressNotices.every(notice => notice.closed));errors.push(message);},showInformationMessage:(title,options) => information.push({title,...options}),activeTextEditor:{document:{uri}}},
       workspace: {textDocuments:[],isTrusted:true,workspaceFolders:[root],getWorkspaceFolder:() => root,onDidSaveTextDocument:handler => {onSave=handler;return {dispose(){}};}},
       commands: {registerCommand:(id,handler) => {commands.set(id,handler);return {dispose(){}};}}
     };
@@ -220,5 +220,23 @@ test('saved documents and keyboard upload command use wsftp-sync configuration; 
     await onSave({uri});
     assert.equal(errors[0],'WSFTP: The configuration JSON is invalid: .vscode/wsftp-sync.json. Check the JSON syntax.');
     assert.equal(uploads.length,3);
+    errors.length = 0;
+    apply = false;
+    await fs.writeFile(configPath,JSON.stringify({...settings,debug:false,discover:false}));
+    const debugCount = diagnostics.length;
+    const replacementCount = outputReplacements.length;
+    await commands.get('wsftp.syncUploadRoot')();
+    assert.equal(errors.length,0);
+    assert.ok(outputReplacements.length > replacementCount+1);
+    assert.equal(outputLines.length,1);
+    assert.match(outputLines[0],/^\[\d{2}:\d{2}:\d{2}\] /);
+    assert.equal(diagnostics.length,debugCount);
+    await fs.writeFile(configPath,JSON.stringify({...settings,debug:true,discover:false}));
+    const compactCount = outputReplacements.length;
+    await commands.get('wsftp.syncUploadRoot')();
+    assert.equal(errors.length,0);
+    assert.equal(outputReplacements.length,compactCount);
+    assert.ok(outputLines.length > 1);
+    assert.ok(outputLines.some(line => line.includes('> PASS [REDACTED]')));
   } finally { await fs.rm(rootPath,{recursive:true,force:true}); }
 });

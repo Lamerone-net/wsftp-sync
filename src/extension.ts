@@ -19,9 +19,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const now = new Date();
     return `[${[now.getHours(),now.getMinutes(),now.getSeconds()].map(value => String(value).padStart(2,'0')).join(':')}]`;
   };
-  const writeLog = (message: string) => {
+  let outputDebug = false;
+  const writeLog = (message: string, debug = outputDebug) => {
+    outputDebug = debug;
     const line = `${logTime()} ${message.replace(/[\r\n\x00-\x1f]/g, ' ')}`;
-    log.appendLine(line);
+    if (debug) log.appendLine(line);
+    else log.replace(line+'\n');
   };
   const queues = new Map<string, Promise<void>>();
   const monitors = new Map<string, { monitor: ChangeMonitor; status: vscode.StatusBarItem; due: number; generation: number; signature?: string }>();
@@ -64,6 +67,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   async function config(root: vscode.WorkspaceFolder): Promise<Config> {
     await ensureConfig(root.uri.fsPath,path.join(context.extensionPath,'wsftp-sync.json'));
     const c = await readConfig(root.uri.fsPath);
+    outputDebug = Boolean(c.debug);
     return c;
   }
   function run(root: vscode.WorkspaceFolder, action: () => Promise<void>, background = false): Promise<void> {
@@ -109,7 +113,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     if (password === undefined) return;
     const trace = (message: string) => {
       const text = [password,c.passphrase].reduce<string>((value,secret) => secret ? value.split(secret).join('[REDACTED]') : value,message);
-      writeLog(text);
+      writeLog(text,Boolean(c.debug));
       if (c.debug) vscode.debug.activeDebugConsole.appendLine(`${logTime()} ${text}`);
     };
     const result = await vscode.window.withProgress({location:vscode.ProgressLocation.Notification,title:'WSFTP: discovering server protocol',cancellable:true},async (progress,token) => {
@@ -164,7 +168,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const redact = (message: string) => [secret,c.password,c.passphrase].reduce<string>((text,value) => value ? text.split(value).join('[REDACTED]') : text,message);
     const trace = (message: string) => {
       const text = redact(message);
-      writeLog(text);
+      writeLog(text,Boolean(c.debug));
       if (c.debug) vscode.debug.activeDebugConsole.appendLine(`${logTime()} ${text}`);
     };
     async function operation<T>(label: string, action: () => Promise<T>, stage?: OperationStage): Promise<T> {

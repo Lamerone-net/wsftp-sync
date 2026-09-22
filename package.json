@@ -2,7 +2,7 @@
   "name": "wsftp-sync",
   "displayName": "WSFTP Sync",
   "description": "SFTP, FTP and FTPS transfers with sync preview and upload on save.",
-  "version": "0.1.49",
+  "version": "0.1.50",
   "publisher": "sparviero-local",
   "license": "GPL-3.0-only",
   "icon": "images/icon.png",

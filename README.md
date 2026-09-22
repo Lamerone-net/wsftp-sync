@@ -6,10 +6,10 @@ A TypeScript extension for VS Code that transfers files over SFTP, FTP, and expl
 
 ## Local installation
 
-In VS Code, run **Extensions: Install from VSIX...**, select `wsftp-sync-0.1.49.vsix`, and open a trusted workspace. Alternatively:
+In VS Code, run **Extensions: Install from VSIX...**, select `wsftp-sync-0.1.50.vsix`, and open a trusted workspace. Alternatively:
 
 ```sh
-code --install-extension wsftp-sync-0.1.49.vsix
+code --install-extension wsftp-sync-0.1.50.vsix
 ```
 
 ## Configuration
@@ -34,7 +34,7 @@ Run **WSFTP: Create/open configuration**, enter your server settings, and use **
 | `autosync` | `false` in the example | Enables periodic checks and notifications; transfers still require Apply. Explicit true/false overrides the VS Code autoCheck.enabled setting. |
 | `autosync_secs` | `120` seconds | Integer from 1 to 86400. Delay after an automatic check completes before the next check; checks never overlap. |
 | `passive` | `true` | Accepts `true` or `false`. With `true`, FTP/FTPS sends `EPSV` (or falls back to `PASV`) before data transfers. With `false`, no passive command is sent: active mode uses `PORT` for IPv4 or `EPRT` for IPv6 so the server connects back to the client. Applies to listings, uploads, and downloads. No effect on SFTP. |
-| `debug` | `false` | When `true`, writes protocol diagnostics and operation messages to **Debug Console** and **Output > WSFTP Sync**. Includes FTP/FTPS commands and complete server replies, SSH/SFTP diagnostics, scans, comparisons, and transfers. Passwords are redacted. When `false`, protocol diagnostics are disabled; normal Output logging remains available. |
+| `debug` | `false` | When `true`, writes protocol diagnostics and operation messages to **Debug Console** and **Output > WSFTP Sync**. Includes FTP/FTPS commands and complete server replies, SSH/SFTP diagnostics, scans, comparisons, and transfers. Passwords are redacted. When `false`, protocol diagnostics are disabled and Output shows only the latest status line, replacing the previous content. When `true`, Output retains the full message history. |
 | `ignore_always` | `[]` | Paths, glob patterns, or PCRE2 regexes excluded from both upload and download. No additional exclusions are added automatically. A directory excludes all descendants. |
 | `ignore_upload` | `[]` | Excludes matching files/directories only from uploads, including upload on save. Does not exclude downloads. |
 | `ignore_download` | `[]` | Excludes matching files/directories only from downloads. Does not exclude uploads. |

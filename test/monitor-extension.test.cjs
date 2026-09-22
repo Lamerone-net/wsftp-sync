@@ -29,7 +29,7 @@ test('automatic checks notify after stability, never apply actions, stop when di
         onDidSaveTextDocument:() => ({dispose(){}}),onDidChangeConfiguration:fn => {configurationChanged=fn;return {dispose(){}};}},
       commands:{registerCommand:(id,fn) => {commands.set(id,fn);return {dispose(){}};}},
       window:{activeTextEditor:{document:{uri:{fsPath:path.join(other.uri.fsPath,'file')}}},
-        createOutputChannel:() => ({appendLine(){},dispose(){}}),
+        createOutputChannel:() => ({appendLine(){},replace(){},dispose(){}}),
         createStatusBarItem:() => {const status={show(){},dispose(){this.disposed=true;}};statuses.push(status);return status;},
         showInformationMessage:(message,...choices) => {notifications.push({message,choices});return Promise.resolve();},
         showWarningMessage:async (message,options,apply,cancel) => {prompts.push({message,options});return cancel;},
