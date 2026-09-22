@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.45
+
+- Import legacy login and path fields as username and remote_path when creating a missing workspace configuration from ftp-sync.json, alongside host, password/pass, port, and ignore filters.
+- Preserve explicit current field names and prefer remotePath over path when multiple legacy aliases are present.
+
 ## 0.1.44
 
 - Show an immediate connection progress notification with the target host and port for manual transfers and synchronization, closing it before reporting connection failures.

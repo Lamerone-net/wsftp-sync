@@ -28,9 +28,13 @@ export async function ensureConfig(root: string, template: string): Promise<void
     for (const field of configFields) {
       if (field !== 'discover' && Object.hasOwn(legacy,field)) value[field] = legacy[field];
     }
-    const aliases: Record<string,string> = {pass:'password',remotePath:'remote_path',uploadOnSave:'upload_on_save'};
+    const aliases: Record<string,string> = {login:'username',pass:'password',remotePath:'remote_path',path:'remote_path',uploadOnSave:'upload_on_save'};
+    const importedFields = new Set(Object.keys(legacy));
     for (const [oldName,newName] of Object.entries(aliases)) {
-      if (!Object.hasOwn(legacy,newName) && Object.hasOwn(legacy,oldName)) value[newName] = legacy[oldName];
+      if (!importedFields.has(newName) && Object.hasOwn(legacy,oldName)) {
+        value[newName] = legacy[oldName];
+        importedFields.add(newName);
+      }
     }
     if (typeof value.port === 'string' && /^\d+$/.test(value.port)) value.port = Number(value.port);
     if (value.remote_path === '.' || value.remote_path === './') value.remote_path = '/';

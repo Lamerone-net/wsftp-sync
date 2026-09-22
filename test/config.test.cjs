@@ -246,14 +246,18 @@ test('legacy aliases, defaults, explicit empty filters and field precedence are 
     const source = path.join(root,'.vscode','ftp-sync.json');
     const destination = path.join(root,'.vscode','wsftp-sync.json');
     for (const legacy of [
+      {login:'user',host:'localhost',pass:'secret',path:'/site',ignored:[]},
       {username:'user',host:'localhost',pass:'secret',remotePath:'./',ignored:[]},
-      {username:'user',host:'localhost',password:'preferred',pass:'other',remote_path:'/preferred',remotePath:'/other',upload_on_save:false,uploadOnSave:true,ignore_always:[],ignore:['ignored'],ignore_upload:[],ignore_download:[]}
+      {username:'user',login:'other',host:'localhost',password:'preferred',pass:'other',remote_path:'/preferred',remotePath:'/other',path:'/another',upload_on_save:false,uploadOnSave:true,ignore_always:[],ignore:['ignored'],ignore_upload:[],ignore_download:[]},
+      {login:'user',host:'localhost',pass:'secret',remotePath:'/preferred',path:'/other',ignored:[]}
     ]) {
       await fs.writeFile(source,JSON.stringify(legacy));
       await ensureConfig(root,path.join(__dirname,'../wsftp-sync.json'));
       const value = JSON.parse(await fs.readFile(destination,'utf8'));
       assert.equal(value.password,legacy.password ?? legacy.pass);
-      assert.equal(value.remote_path,legacy.remote_path ?? '/');
+      assert.equal(value.username,'user');
+      assert.equal(value.host,'localhost');
+      assert.equal(value.remote_path,legacy.remote_path ?? (legacy.remotePath === './' ? '/' : legacy.remotePath ?? legacy.path));
       assert.deepEqual(value.ignore_always,[]);
       assert.equal(value.discover,true);
       assert.equal(value.port,21);
