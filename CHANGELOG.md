@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.48
+
+- Automatically reveal the WSFTP Sync Output channel when a manual synchronization initializes the local cache, preserving editor focus.
+- Log comparison counts and paths during initial synchronization and report when the cache has been saved.
+
 ## 0.1.47
 
 - Show "Creating the local cache. This may take a few minutes." during manual synchronization comparisons when no valid saved cache is available; retain the usual comparison message for subsequent runs.

@@ -310,13 +310,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await session(root,c,async (t,writeLog) => {
         await vscode.window.withProgress({location:vscode.ProgressLocation.Notification,title:'WSFTP: synchronization',cancellable:true},async (progress,token) => {
           const check = () => { if (token.isCancellationRequested) throw new vscode.CancellationError(); };
+          const cache = await cacheFor(root,c);
+          if (cache.needsInitialization) {
+            log.show(true);
+            writeLog('Creating the local cache. This may take a few minutes.');
+          }
           progress.report({message:'Scanning local and remote files...'});
           writeLog(`Synchronization ${direction}: ${scope || 'root'}; scanning local and remote files`);
           const local = await scanLocal(root.uri.fsPath,c,check,scope,writeLog);
           writeLog(`Local scan completed: ${local.size} files`);
           const remote = await scanRemote(t,c,check,scope);
           writeLog(`Remote scan completed: ${remote.size} files; comparing size and CRC32`);
-          const cache = await cacheFor(root,c);
           cache.prune(local,remote,c,scope);
           progress.report({message:cache.needsInitialization ? 'Creating the local cache. This may take a few minutes.' : 'Comparing files and synchronization history...'});
           const changes = await planSync(t,c,root.uri.fsPath,local,remote,direction,check,writeLog,cache);
@@ -377,13 +381,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await session(root,c,async (t,trace) => {
         await vscode.window.withProgress({location:vscode.ProgressLocation.Notification,title:`WSFTP: ${label}`,cancellable:true},async (progress,token) => {
           const check = () => { if (token.isCancellationRequested) throw new vscode.CancellationError(); };
-          progress.report({message:'Scanning local and remote files...'});
-          const snapshot = await scanTrees(t,root.uri.fsPath,c,check);
           const cache = await cacheFor(root,c);
+          const initializing = cache.needsInitialization;
+          if (initializing) {
+            log.show(true);
+            trace('Creating the local cache. This may take a few minutes.');
+          }
+          progress.report({message:'Scanning local and remote files...'});
+          trace('Scanning local and remote files...');
+          const snapshot = await scanTrees(t,root.uri.fsPath,c,check);
           cache.prune(snapshot.local,snapshot.remote,c,'');
           progress.report({message:cache.needsInitialization ? 'Creating the local cache. This may take a few minutes.' : 'Comparing files and synchronization history...'});
-          const actions = (await buildSyncPlan(t,root.uri.fsPath,c,mode,snapshot,cache,check)).filter(action => !transferOnly || !action.kind.startsWith('delete-'));
+          const actions = (await buildSyncPlan(t,root.uri.fsPath,c,mode,snapshot,cache,check,initializing ? trace : undefined)).filter(action => !transferOnly || !action.kind.startsWith('delete-'));
           await cache.save();
+          if (initializing) trace('Local cache created. File comparison completed.');
           const pending = actions.filter(a => a.kind !== 'conflict');
           const conflicts = actions.length-pending.length;
           const deletions = pending.filter(a => a.kind.startsWith('delete-')).length;

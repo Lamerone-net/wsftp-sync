@@ -6,10 +6,10 @@ A TypeScript extension for VS Code that transfers files over SFTP, FTP, and expl
 
 ## Local installation
 
-In VS Code, run **Extensions: Install from VSIX...**, select `wsftp-sync-0.1.47.vsix`, and open a trusted workspace. Alternatively:
+In VS Code, run **Extensions: Install from VSIX...**, select `wsftp-sync-0.1.48.vsix`, and open a trusted workspace. Alternatively:
 
 ```sh
-code --install-extension wsftp-sync-0.1.47.vsix
+code --install-extension wsftp-sync-0.1.48.vsix
 ```
 
 ## Configuration

@@ -24,6 +24,7 @@ test('saved documents and keyboard upload command use wsftp-sync configuration; 
     let discoveredProtocol = 'ftps';
     const information = [];
     const progressNotices = [];
+    const outputShows = [], outputLines = [];
     let connectionStarted, connectionGate;
     const remoteFiles = new Map();
     const vscode = {
@@ -35,7 +36,7 @@ test('saved documents and keyboard upload command use wsftp-sync configuration; 
         progressNotices.push(notice);
         try { return await action({report:update => notice.messages.push(update.message)},{isCancellationRequested:false}); }
         finally { notice.closed = true; }
-      },showWarningMessage:async (title,options,yes,no) => {previews.push({title,...options,yes,no});return apply ? yes : no;},createOutputChannel:() => ({appendLine(){},dispose(){}}),showErrorMessage:message => {assert.ok(progressNotices.every(notice => notice.closed));errors.push(message);},showInformationMessage:(title,options) => information.push({title,...options}),activeTextEditor:{document:{uri}}},
+      },showWarningMessage:async (title,options,yes,no) => {previews.push({title,...options,yes,no});return apply ? yes : no;},createOutputChannel:name => ({appendLine:line => outputLines.push(line),show:preserveFocus => outputShows.push({name,preserveFocus}),dispose(){}}),showErrorMessage:message => {assert.ok(progressNotices.every(notice => notice.closed));errors.push(message);},showInformationMessage:(title,options) => information.push({title,...options}),activeTextEditor:{document:{uri}}},
       workspace: {textDocuments:[],isTrusted:true,workspaceFolders:[root],getWorkspaceFolder:() => root,onDidSaveTextDocument:handler => {onSave=handler;return {dispose(){}};}},
       commands: {registerCommand:(id,handler) => {commands.set(id,handler);return {dispose(){}};}}
     };
@@ -59,7 +60,8 @@ test('saved documents and keyboard upload command use wsftp-sync configuration; 
         return {list:async remote => { if (listFailure) throw listFailure; return remote === '/' ? [...remoteFiles].map(([name,e]) => ({name,...e})) : []; },download:async (remote,local) => fs.writeFile(local,'downloaded'),upload:async (local,remote) => { if (uploadFailure) throw uploadFailure; uploads.push([local,remote]); },close:async () => { if (closeFailure) throw closeFailure; }};
       }
     } : realRequire(id)}, {filename});
-    await exports.activate({extensionPath:path.join(__dirname,'..'),subscriptions:[],globalState:{get:key => trust.get(key),update:async (key,value) => trust.set(key,value)},secrets:{get:async () => undefined}});
+    const context = {extensionPath:path.join(__dirname,'..'),subscriptions:[],globalState:{get:key => trust.get(key),update:async (key,value) => trust.set(key,value)},secrets:{get:async () => undefined}};
+    await exports.activate(context);
     await onSave({uri});
     assert.ok(diagnostics.some(line => line.includes('< 220 Welcome\r\nServer ready')));
     assert.ok(diagnostics.some(line => line.includes('> PASS [REDACTED]')));
@@ -129,14 +131,20 @@ test('saved documents and keyboard upload command use wsftp-sync configuration; 
     assert.doesNotMatch(previews.at(-1).detail,/  file.txt/);
     remoteFiles.set('remote.txt',{size:10,mtime:10000,directory:false,symlink:false});
     apply = false;
+    context.globalStorageUri = {fsPath:path.join(rootPath,'.vscode','test-storage')};
+    const initialShows = outputShows.length;
     for (const [key,id] of [['u','syncUploadRoot'],['d','syncDownloadRoot'],['s','bidirectional']]) {
       assert.equal(manifest.contributes.keybindings.find(b => b.key === 'ctrl+alt+'+key).command,'wsftp.'+id);
       await commands.get('wsftp.'+id)();
+      assert.equal(outputShows.length,initialShows+1,'Only the first synchronization reveals Output');
+      assert.deepEqual(outputShows.at(-1),{name:'WSFTP Sync',preserveFocus:true});
       assert.equal(previews.at(-1).yes.title,'Apply');
       assert.doesNotMatch(previews.at(-1).detail,/DELETE-(LOCAL|REMOTE)/);
       if (id === 'syncDownloadRoot') assert.match(previews.at(-1).detail,/DOWNLOAD  remote.txt/);
       if (id === 'bidirectional') assert.doesNotMatch(previews.at(-1).detail,/DELETE-(LOCAL|REMOTE)/);
     }
+    assert.ok(outputLines.some(line => /Comparing \d+\/\d+: file.txt/.test(line)));
+    assert.ok(outputLines.some(line => line.includes('Local cache created. File comparison completed.')));
     assert.equal(uploads.length,3);
     assert.equal(await fs.readFile(uri.fsPath,'utf8'),'hello');
     apply = false;

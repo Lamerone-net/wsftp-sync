@@ -97,7 +97,7 @@ export async function fingerprint(t: Transport, root: string, c: Config, side: '
   } finally { if (temporary) await fs.rm(temporary,{recursive:true,force:true}); }
 }
 
-export async function buildSyncPlan(t: Transport, root: string, c: Config, mode: SyncMode, snapshot: Snapshot, cache: SyncCache, check: () => void): Promise<SyncAction[]> {
+export async function buildSyncPlan(t: Transport, root: string, c: Config, mode: SyncMode, snapshot: Snapshot, cache: SyncCache, check: () => void, progress?: (message: string) => void): Promise<SyncAction[]> {
   const {local,remote} = snapshot;
   const actions: SyncAction[] = [];
   const blocked = new Set<string>();
@@ -106,8 +106,10 @@ export async function buildSyncPlan(t: Transport, root: string, c: Config, mode:
     const parts = relative.split('/');
     return parts.some((_,i) => blocked.has(parts.slice(0,i+1).join('/')));
   };
+  let inspected = 0;
   for (const relative of paths) {
     check();
+    progress?.(`Comparing ${++inspected}/${paths.length}: ${relative}`);
     const l = local.get(relative), r = remote.get(relative);
     if (l?.blocked || r?.blocked) { blocked.add(relative); continue; }
     if (underBlocked(relative)) continue;
