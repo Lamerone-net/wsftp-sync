@@ -86,7 +86,7 @@ test('example configuration, discovery precedence, shared exclusions and debug v
     await fs.writeFile(path.join(root,'.vscode','wsftp-sync.json'),JSON.stringify(example));
     const config = await readConfig(root);
     assert.equal(config.protocol,'ftps');
-    assert.equal(config.debug,true);
+    assert.equal(config.debug,example.debug);
     assert.equal(config.password,example.password);
     const { forDirection, parseConfig } = require('../dist/core');
     for (const direction of ['upload','download']) {

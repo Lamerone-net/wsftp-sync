@@ -15,8 +15,12 @@ import { localPath, scanLocal, scanRemote, download, planSync } from './files';
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const log = vscode.window.createOutputChannel('WSFTP Sync');
+  const logTime = () => {
+    const now = new Date();
+    return `[${[now.getHours(),now.getMinutes(),now.getSeconds()].map(value => String(value).padStart(2,'0')).join(':')}]`;
+  };
   const writeLog = (message: string) => {
-    const line = `${new Date().toISOString()} ${message.replace(/[\r\n\x00-\x1f]/g, ' ')}`;
+    const line = `${logTime()} ${message.replace(/[\r\n\x00-\x1f]/g, ' ')}`;
     log.appendLine(line);
   };
   const queues = new Map<string, Promise<void>>();
@@ -106,7 +110,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const trace = (message: string) => {
       const text = [password,c.passphrase].reduce<string>((value,secret) => secret ? value.split(secret).join('[REDACTED]') : value,message);
       writeLog(text);
-      if (c.debug) vscode.debug.activeDebugConsole.appendLine(`${new Date().toISOString()} ${text}`);
+      if (c.debug) vscode.debug.activeDebugConsole.appendLine(`${logTime()} ${text}`);
     };
     const result = await vscode.window.withProgress({location:vscode.ProgressLocation.Notification,title:'WSFTP: discovering server protocol',cancellable:true},async (progress,token) => {
       const check = () => { if (token.isCancellationRequested) throw new vscode.CancellationError(); };
@@ -159,9 +163,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
     const redact = (message: string) => [secret,c.password,c.passphrase].reduce<string>((text,value) => value ? text.split(value).join('[REDACTED]') : text,message);
     const trace = (message: string) => {
-      const text = redact(`[${root.name} | ${c.protocol.toUpperCase()} ${c.host}:${c.port}] ${message}`);
+      const text = redact(message);
       writeLog(text);
-      if (c.debug) vscode.debug.activeDebugConsole.appendLine(`${new Date().toISOString()} ${text}`);
+      if (c.debug) vscode.debug.activeDebugConsole.appendLine(`${logTime()} ${text}`);
     };
     async function operation<T>(label: string, action: () => Promise<T>, stage?: OperationStage): Promise<T> {
       trace(`${label}: started`);

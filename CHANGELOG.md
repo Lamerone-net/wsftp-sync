@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.49
+
+- Use compact local-time [HH:mm:ss] log timestamps and remove the repeated workspace, protocol, host, and port prefix from session messages.
+
 ## 0.1.48
 
 - Automatically reveal the WSFTP Sync Output channel when a manual synchronization initializes the local cache, preserving editor focus.
