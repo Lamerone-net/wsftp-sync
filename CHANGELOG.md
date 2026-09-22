@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.47
+
+- Show "Creating the local cache. This may take a few minutes." during manual synchronization comparisons when no valid saved cache is available; retain the usual comparison message for subsequent runs.
+
+## 0.1.46
+
+- Keep template ignore_always rules first when importing legacy configuration, then append and deduplicate rules from ignore_always, ignore, and ignored, including when legacy lists are empty.
+- Convert common legacy dot-directory, filename, and slash-delimited directory expressions to recursive globs; preserve complex expressions in the supported regex format.
+
 ## 0.1.45
 
 - Import legacy login and path fields as username and remote_path when creating a missing workspace configuration from ftp-sync.json, alongside host, password/pass, port, and ignore filters.

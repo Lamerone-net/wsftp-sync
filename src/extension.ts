@@ -318,6 +318,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           writeLog(`Remote scan completed: ${remote.size} files; comparing size and CRC32`);
           const cache = await cacheFor(root,c);
           cache.prune(local,remote,c,scope);
+          progress.report({message:cache.needsInitialization ? 'Creating the local cache. This may take a few minutes.' : 'Comparing files and synchronization history...'});
           const changes = await planSync(t,c,root.uri.fsPath,local,remote,direction,check,writeLog,cache);
           await saveCache(cache);
           writeLog(`Comparison completed: ${changes.length} files to transfer`);
@@ -380,7 +381,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           const snapshot = await scanTrees(t,root.uri.fsPath,c,check);
           const cache = await cacheFor(root,c);
           cache.prune(snapshot.local,snapshot.remote,c,'');
-          progress.report({message:'Comparing files and synchronization history...'});
+          progress.report({message:cache.needsInitialization ? 'Creating the local cache. This may take a few minutes.' : 'Comparing files and synchronization history...'});
           const actions = (await buildSyncPlan(t,root.uri.fsPath,c,mode,snapshot,cache,check)).filter(action => !transferOnly || !action.kind.startsWith('delete-'));
           await cache.save();
           const pending = actions.filter(a => a.kind !== 'conflict');

@@ -258,7 +258,8 @@ test('legacy aliases, defaults, explicit empty filters and field precedence are 
       assert.equal(value.username,'user');
       assert.equal(value.host,'localhost');
       assert.equal(value.remote_path,legacy.remote_path ?? (legacy.remotePath === './' ? '/' : legacy.remotePath ?? legacy.path));
-      assert.deepEqual(value.ignore_always,[]);
+      const defaults = JSON.parse(await fs.readFile(path.join(__dirname,'../wsftp-sync.json'),'utf8')).ignore_always;
+      assert.deepEqual(value.ignore_always,[...defaults,...(legacy.ignore ? ['/ignored/'] : [])]);
       assert.equal(value.discover,true);
       assert.equal(value.port,21);
       assert.equal(value.upload_on_save,legacy.upload_on_save ?? true);
@@ -268,12 +269,38 @@ test('legacy aliases, defaults, explicit empty filters and field precedence are 
   } finally { await fs.rm(root,{recursive:true,force:true}); }
 });
 
+test('legacy ignores follow template rules, convert common patterns and preserve complex expressions', async () => {
+  const { ensureConfig } = require('../dist/config');
+  const root = await fs.mkdtemp(path.join(os.tmpdir(),'wsftp-ignore-import-'));
+  const template = path.join(__dirname,'../wsftp-sync.json');
+  const defaults = JSON.parse(await fs.readFile(template,'utf8')).ignore_always;
+  try {
+    await fs.mkdir(path.join(root,'.vscode'));
+    const source = JSON.stringify({...base,
+      ignore_always:[defaults[0],'**/custom/**'],
+      ignore:['\\.vscode','sftp-settings\\.json','/LC_MESSAGES/','(^|/)cache/','\\.log$'],
+      ignored:['/LC_MESSAGES/','/other/']});
+    await fs.writeFile(path.join(root,'.vscode','ftp-sync.json'),source);
+    await ensureConfig(root,template);
+    const imported = JSON.parse(await fs.readFile(path.join(root,'.vscode','wsftp-sync.json'),'utf8'));
+    assert.deepEqual(imported.ignore_always,[...defaults,'**/custom/**','**/.vscode/**','**/sftp-settings.json','**/LC_MESSAGES/**','/(^|/)cache//','/\\.log$/','**/other/**']);
+    const config = await readConfig(root);
+    for (const name of ['.ssh/key','sub/.ssh/key','sub/.vscode/settings.json','sftp-settings.json','nested/sftp-settings.json','LC_MESSAGES/messages.po','nested/LC_MESSAGES/deep/messages.po','custom/file','sub/cache/file','error.log','other/file']) {
+      assert.equal(excluded(name,config.exclude),true,name);
+    }
+    for (const name of ['src/file.ts','sub/vscode/file','sftp-settingsXjson','other-sftp-settings.json','nested/LC_MESSAGES_BACKUP/messages.po']) {
+      assert.equal(excluded(name,config.exclude),false,name);
+    }
+    assert.equal(await fs.readFile(path.join(root,'.vscode','ftp-sync.json'),'utf8'),source);
+  } finally { await fs.rm(root,{recursive:true,force:true}); }
+});
+
 test('invalid legacy imports fail without creating a file or revealing credentials', async () => {
   const { ensureConfig } = require('../dist/config');
   const root = await fs.mkdtemp(path.join(os.tmpdir(),'wsftp-invalid-import-'));
   try {
     await fs.mkdir(path.join(root,'.vscode'));
-    for (const text of ['{"password":"secret",}', 'null','[]',JSON.stringify({...base,ignore:[3]}),JSON.stringify({...base,ignore:['[']}),JSON.stringify({...base,port:'invalid'})]) {
+    for (const text of ['{"password":"secret",}', 'null','[]',JSON.stringify({...base,ignore:[3]}),JSON.stringify({...base,ignore:['[']}),JSON.stringify({...base,ignore_always:null}),JSON.stringify({...base,ignored:['[']}),JSON.stringify({...base,port:'invalid'})]) {
       await fs.writeFile(path.join(root,'.vscode','ftp-sync.json'),text);
       await assert.rejects(ensureConfig(root,path.join(__dirname,'../wsftp-sync.json')),error => error instanceof UserError && /import/.test(error.message) && !error.message.includes('secret'));
       await assert.rejects(fs.stat(path.join(root,'.vscode','wsftp-sync.json')),{code:'ENOENT'});

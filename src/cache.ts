@@ -9,9 +9,12 @@ type Side = 'local' | 'remote';
 // Observed content hashes are not transfer acknowledgements: differences remain
 // pending even when the user cancels a preview after these hashes are saved.
 export class SyncCache {
+  private initialized = false;
   private baselines = new Map<string, string>();
   private entries = new Map<string, CachedEntry>();
   constructor(private file?: string) {}
+
+  get needsInitialization(): boolean { return !this.initialized; }
 
   static filename(storage: string, root: string, c: Config): string {
     const identity = [path.resolve(root),c.protocol,c.host,c.port,c.username,c.remote_path];
@@ -19,6 +22,7 @@ export class SyncCache {
   }
 
   async load(): Promise<void> {
+    this.initialized = false;
     if (!this.file) return;
     try {
       const data = JSON.parse(await fs.readFile(this.file,'utf8'));
@@ -31,6 +35,7 @@ export class SyncCache {
         const [key,value] = item;
         if (typeof key === 'string' && value && Number.isFinite(value.size) && value.size >= 0 && Number.isFinite(value.mtime) && typeof value.crc32 === 'string' && /^[0-9a-f]{8}$/.test(value.crc32)) this.entries.set(key,value);
       }
+      this.initialized = true;
     } catch { this.entries.clear(); this.baselines.clear(); }
   }
 
@@ -73,6 +78,7 @@ export class SyncCache {
     try {
       await fs.writeFile(temporary,JSON.stringify({version:1,entries:[...this.entries],baselines:[...this.baselines]}));
       await fs.rename(temporary,this.file);
+      this.initialized = true;
     } finally { await fs.rm(temporary,{force:true}); }
   }
 }

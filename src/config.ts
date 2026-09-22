@@ -6,6 +6,16 @@ import { Config, configFields, parseConfig, UserError } from './core';
 
 export class InactiveConfig extends Error {}
 
+function migrateLegacyIgnore(pattern: string): string {
+  // Convert common directory and filename expressions; keep complex regexes intact.
+  const literal = pattern.replace(/\\\./g,'.');
+  if (pattern !== literal.replace(/\./g,'\\.')) return `/${pattern}/`;
+  if (/^\/[\w.-]+(?:\/[\w.-]+)*\/$/.test(literal)) return `**${literal}**`;
+  if (/^\.[\w-]+$/.test(literal) && pattern.startsWith('\\.')) return `**/${literal}/**`;
+  if (/^[\w-]+(?:\.[\w-]+)+$/.test(literal) && pattern.includes('\\.')) return `**/${literal}`;
+  return `/${pattern}/`;
+}
+
 export async function ensureConfig(root: string, template: string): Promise<void> {
   const directory = path.join(root,'.vscode');
   try { if (!(await fs.stat(directory)).isDirectory()) return; }
@@ -26,7 +36,7 @@ export async function ensureConfig(root: string, template: string): Promise<void
     } catch { throw new UserError('Cannot import .vscode/ftp-sync.json: expected a valid JSON object. Check the JSON syntax.'); }
     const value = JSON.parse(await fs.readFile(template,'utf8')) as Record<string, unknown>;
     for (const field of configFields) {
-      if (field !== 'discover' && Object.hasOwn(legacy,field)) value[field] = legacy[field];
+      if (field !== 'discover' && field !== 'ignore_always' && Object.hasOwn(legacy,field)) value[field] = legacy[field];
     }
     const aliases: Record<string,string> = {login:'username',pass:'password',remotePath:'remote_path',path:'remote_path',uploadOnSave:'upload_on_save'};
     const importedFields = new Set(Object.keys(legacy));
@@ -38,15 +48,16 @@ export async function ensureConfig(root: string, template: string): Promise<void
     }
     if (typeof value.port === 'string' && /^\d+$/.test(value.port)) value.port = Number(value.port);
     if (value.remote_path === '.' || value.remote_path === './') value.remote_path = '/';
-    if (!Object.hasOwn(legacy,'ignore_always')) {
-      const patterns = legacy.ignore ?? legacy.ignored;
-      if (patterns !== undefined) {
-        if (!Array.isArray(patterns) || !patterns.every(pattern => typeof pattern === 'string' && pattern.length > 0)) {
-          throw new UserError('Cannot import .vscode/ftp-sync.json: ignore/ignored must be a list of nonempty regular expressions.');
-        }
-        value.ignore_always = patterns.map(pattern => `/${pattern}/`);
+    const mergedIgnores = [...(value.ignore_always as string[] ?? [])];
+    for (const field of ['ignore_always','ignore','ignored']) {
+      if (!Object.hasOwn(legacy,field)) continue;
+      const patterns = legacy[field];
+      if (!Array.isArray(patterns) || !patterns.every(pattern => typeof pattern === 'string' && pattern.length > 0)) {
+        throw new UserError('Cannot import .vscode/ftp-sync.json: ignore_always/ignore/ignored must be lists of nonempty patterns.');
       }
+      mergedIgnores.push(...(field === 'ignore_always' ? patterns : patterns.map(migrateLegacyIgnore)));
     }
+    value.ignore_always = [...new Set(mergedIgnores)];
     value.discover = true;
     await initializeRegex();
     try {

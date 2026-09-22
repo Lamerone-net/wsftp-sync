@@ -8,6 +8,26 @@ const { planSync, scanLocal } = require('../dist/files');
 const { parseConfig } = require('../dist/core');
 const config = parseConfig({protocol:'sftp',host:'example',username:'user',remote_path:'/www'});
 
+test('cache initialization distinguishes missing or invalid history from a saved empty cache', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(),'wsftp-cache-initialization-'));
+  try {
+    const file = path.join(root,'cache.json');
+    let cache = new SyncCache(file);
+    await cache.load();
+    assert.equal(cache.needsInitialization,true);
+    await cache.save();
+    assert.equal(cache.needsInitialization,false);
+    cache = new SyncCache(file);
+    await cache.load();
+    assert.equal(cache.needsInitialization,false);
+    for (const invalid of ['broken',JSON.stringify({version:2,entries:[]})]) {
+      await fs.writeFile(file,invalid);
+      await cache.load();
+      assert.equal(cache.needsInitialization,true);
+    }
+  } finally { await fs.rm(root,{recursive:true,force:true}); }
+});
+
 test('persistent cache avoids unchanged downloads and retains cancelled differences', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(),'wsftp-cache-test-'));
   try {
