@@ -207,6 +207,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }, 'list'),
       upload: (local,remote) => operation(`Upload ${local} -> ${remote}`, () => connected.upload(local,remote), 'upload'),
       download: (remote,local) => operation(`Download ${remote} -> ${local}`, () => connected.download(remote,local), 'download'),
+      ...(connected.readTo ? {readTo:(remote: string,destination: import('node:stream').Writable) => operation(`Reading remote content ${remote}`,() => connected.readTo!(remote,destination),'download')} : {}),
       mkdir: remote => operation(`Create remote directory ${remote}`, () => connected.mkdir(remote), 'mkdir'),
       remove: (remote,directory) => operation(`Delete remote ${directory ? 'directory' : 'file'} ${remote}`, () => connected.remove(remote,directory), 'remove'),
       close: () => operation('Disconnect', () => connected.close(), 'close')

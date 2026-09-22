@@ -12,6 +12,7 @@ const selfsigned = require('selfsigned');
 const extensionRoot = process.env.WSFTP_TEST_EXTENSION || path.join(__dirname,'..');
 const { connect } = require(path.join(extensionRoot,'dist/transport'));
 const { parseConfig } = require(path.join(extensionRoot,'dist/core'));
+const { remoteCRC32, crc32File } = require(path.join(extensionRoot,'dist/checksum'));
 
 test('FTP and explicit FTPS round trips; untrusted TLS certificate rejected', {timeout:30000}, async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(),'wsftp-ftp-'));
@@ -32,6 +33,7 @@ test('FTP and explicit FTPS round trips; untrusted TLS certificate rejected', {t
       await t.upload(input,'/nested/remote.txt');
       assert.ok((await t.list('/nested')).some(e => e.name === 'remote.txt' && e.size === 17));
       await t.download('/nested/remote.txt',path.join(root,'output.txt'));
+      assert.deepEqual(await remoteCRC32(t,'/nested/remote.txt',() => {}),{hash:await crc32File(input,() => {}),size:17});
       assert.equal(await fs.readFile(path.join(root,'output.txt'),'utf8'),'WSFTP round trip\n');
       await assert.rejects(t.remove('/nested',true));
       await t.remove('/nested/remote.txt',false); await t.remove('/nested',true);
@@ -72,6 +74,7 @@ test('FTP and explicit FTPS round trips; untrusted TLS certificate rejected', {t
         await trusted.upload(input,'/trusted/file.txt');
         assert.ok((await trusted.list('/trusted')).some(entry => entry.name === 'file.txt'));
         await trusted.download('/trusted/file.txt',path.join(root,'trusted-output.txt'));
+        assert.deepEqual(await remoteCRC32(trusted,'/trusted/file.txt',() => {}),{hash:await crc32File(input,() => {}),size:17});
         assert.equal(await fs.readFile(path.join(root,'trusted-output.txt'),'utf8'),'WSFTP round trip\n');
       } finally { await trusted.close(); }
     }
@@ -92,6 +95,7 @@ test('FTP and explicit FTPS round trips; untrusted TLS certificate rejected', {t
         assert.ok((await active.list(`/active-${protocol}`)).some(entry => entry.name === 'file.txt' && entry.size === 17));
         const destination = path.join(root,`active-${protocol}-output.txt`);
         await active.download(`/active-${protocol}/file.txt`,destination);
+        assert.deepEqual(await remoteCRC32(active,`/active-${protocol}/file.txt`,() => {}),{hash:await crc32File(input,() => {}),size:17});
         assert.equal(await fs.readFile(destination,'utf8'),'WSFTP round trip\n');
         await assert.rejects(active.download('/missing.txt',path.join(root,'missing-output')));
         await assert.rejects(active.remove(`/active-${protocol}`,true));
@@ -163,6 +167,7 @@ test('SFTP round trip, password authentication and host key rejection', {timeout
       testContext.diagnostic('uploaded');
       assert.ok((await t.list('/nested')).some(e => e.name === 'file.txt' && e.size === 9));
       const output = path.join(root,'output.txt'); await t.download('/nested/file.txt',output);
+      assert.deepEqual(await remoteCRC32(t,'/nested/file.txt',() => {}),{hash:await crc32File(input,() => {}),size:9});
       assert.equal(await fs.readFile(output,'utf8'),'SFTP data');
       await assert.rejects(t.remove('/nested',true));
       await t.remove('/nested/file.txt',false); await t.remove('/nested',true);

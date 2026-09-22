@@ -21,6 +21,7 @@ export interface Transport {
   list(remote: string): Promise<RemoteEntry[]>;
   upload(local: string, remote: string): Promise<void>;
   download(remote: string, local: string): Promise<void>;
+  readTo?(remote: string, destination: Writable): Promise<void>;
   mkdir(remote: string): Promise<void>;
   remove(remote: string, directory: boolean): Promise<void>;
   close(): Promise<void>;
@@ -56,6 +57,7 @@ export async function connect(c: Config, secret: string | undefined, verify: (ha
       list: async remote => (await client.list(remote)).map(e => ({ name: e.name, size: e.size, mtime: e.modifyTime, directory: e.type === 'd', symlink: e.type === 'l' })),
       upload: async (local, remote) => { await client.mkdir(path.posix.dirname(remote), true); await client.put(local, remote); },
       download: async (remote, local) => { await client.get(remote, local); },
+      readTo: async (remote, destination) => { await client.get(remote,destination); },
       mkdir: async remote => { await client.mkdir(remote,true); },
       remove: async (remote,directory) => { if (directory) await client.rmdir(remote,false); else await client.delete(remote); },
       close: async () => { await client.end(); }
@@ -110,6 +112,9 @@ export async function connect(c: Config, secret: string | undefined, verify: (ha
       download: async (remote,local) => {
         await activeTransfer(client,`RETR ${await client.protectWhitespace(remote)}`,socket => pipeline(socket,createWriteStream(local)));
       },
+      readTo: async (remote,destination) => {
+        await activeTransfer(client,`RETR ${await client.protectWhitespace(remote)}`,socket => pipeline(socket,destination));
+      },
       mkdir: async remote => { await client.ensureDir(remote); },
       remove: async (remote,directory) => { if (directory) await client.removeEmptyDir(remote); else await client.remove(remote); },
       close: async () => { client.close(); }
@@ -119,6 +124,7 @@ export async function connect(c: Config, secret: string | undefined, verify: (ha
     list: async remote => (await client.list(remote)).map(e => ({ name: e.name, size: e.size, mtime: e.modifiedAt?.getTime() ?? 0, directory: e.isDirectory, symlink: e.isSymbolicLink })),
     upload: async (local, remote) => { await client.ensureDir(path.posix.dirname(remote)); await client.uploadFrom(local, remote); },
     download: async (remote, local) => { await client.downloadTo(local, remote); },
+    readTo: async (remote, destination) => { await client.downloadTo(destination,remote); },
     mkdir: async remote => { await client.ensureDir(remote); },
     remove: async (remote,directory) => { if (directory) await client.removeEmptyDir(remote); else await client.remove(remote); },
     close: async () => { client.close(); }

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.51
+
+- Batch remote content verification by directory (up to 32 files), reuse directory listings within each batch, and revalidate files and parent paths with fresh listings before committing hashes or shared baselines.
+- Compute remote CRC32 directly from FTP, FTPS, and SFTP streams without comparison files on disk; overlap local hashing/scanning with remote work while keeping FTP commands sequential.
+- Checkpoint verified cache progress during long comparisons and preserve completed batches on cancellation or failure. Existing cache files remain compatible.
+- Avoid unnecessary content reads for empty files and bidirectional size differences that can already be classified against synchronization history; report byte progress for long remote comparisons.
+- Add regression coverage for reduced listing counts, cached reruns, partial-cache recovery, concurrent remote changes, symlink replacement, truncated transfers, and streaming checksums across supported transports.
+
 ## 0.1.50
 
 - Replace the WSFTP Sync Output content with the latest status line when debug is false, avoiding manual scrolling; keep appending full diagnostics when debug is true.

@@ -1,11 +1,12 @@
 import * as fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { createReadStream } from 'node:fs';
-import os from 'node:os';
 import { Config, Entry, Change, UserError, excluded, remoteFile, safeRelative } from './core';
-import { Transport, inspectRemote } from './transport';
+import { Transport } from './transport';
 import { SyncCache } from './cache';
+import { crc32File } from './checksum';
+import { RemoteComparison } from './comparison';
+export { crc32File } from './checksum';
 
 export async function localPath(root: string, relative: string): Promise<string> {
   safeRelative(relative);
@@ -76,73 +77,62 @@ export async function download(t: Transport, c: Config, root: string, relative: 
   } finally { await fs.rm(temporary,{ force:true }); }
 }
 
-// CRC-32/ISO-HDLC, processed incrementally to keep memory usage bounded.
-const crcTable = Uint32Array.from({length:256}, (_,index) => {
-  let value = index;
-  for (let bit = 0; bit < 8; bit++) value = (value >>> 1) ^ ((value & 1) ? 0xedb88320 : 0);
-  return value >>> 0;
-});
-export async function crc32File(file: string, cancelled: () => void): Promise<string> {
-  let crc = 0xffffffff;
-  for await (const chunk of createReadStream(file)) {
-    cancelled();
-    for (const byte of chunk as Buffer) crc = (crc >>> 8) ^ crcTable[(crc ^ byte) & 0xff];
-  }
-  cancelled();
-  return ((crc ^ 0xffffffff) >>> 0).toString(16).padStart(8,'0');
-}
-
 export async function planSync(t: Transport, c: Config, root: string, local: Map<string, Entry>, remote: Map<string, Entry>, direction: 'upload' | 'download', cancelled: () => void, log: (message: string) => void = () => {}, cache?: SyncCache): Promise<Change[]> {
   const source = direction === 'upload' ? local : remote;
   const target = direction === 'upload' ? remote : local;
   const candidates: Change[] = [...source].map(([relative,entry]) => ({relative,source:entry,target:target.get(relative),reason:target.has(relative) ? 'changed' : 'new'}));
   candidates.sort((a,b) => a.relative.localeCompare(b.relative));
   const changes: Change[] = [];
-  for (const change of candidates) {
-    cancelled();
-    if (!change.target || change.source.size !== change.target.size) {
-      log(`${change.relative}: ${!change.target ? 'missing destination' : `size differs (${change.source.size} vs ${change.target.size} bytes)`}`);
-      changes.push(change); continue;
-    }
-    // Equal sizes need content verification, regardless of modification time.
-    log(`CRC32 verification: ${change.relative}; size=${change.source.size}; source mtime=${change.source.mtime}; target mtime=${change.target.mtime}`);
-    const file = await localPath(root,change.relative);
-    const expectedLocal = local.get(change.relative)!;
-    const expectedRemote = remote.get(change.relative)!;
-    const stableLocal = async () => {
-      const current = await fs.stat(await localPath(root,change.relative));
-      if (current.size !== expectedLocal.size || current.mtimeMs !== expectedLocal.mtime) throw new UserError('Local file changed during content verification. Run synchronization again.');
-    };
-    const stableRemote = async () => {
-      const current = await inspectRemote(t,c,change.relative);
-      if (!current || current.size !== expectedRemote.size || current.mtime !== expectedRemote.mtime) throw new UserError('Remote file changed during content verification. Run synchronization again.');
-    };
-    const cachedLocal = cache?.get('local',change.relative,expectedLocal);
-    const cachedRemote = cache?.get('remote',change.relative,expectedRemote);
-    if (cachedLocal !== undefined && cachedRemote !== undefined) {
-      log(`Cache hit: ${change.relative}; local CRC32=${cachedLocal}; remote CRC32=${cachedRemote}`);
-      if (cachedLocal !== cachedRemote) changes.push(change);
-      else cache?.acknowledge(change.relative,`${expectedLocal.size}:${cachedLocal}`);
-      continue;
-    }
-    await stableLocal();
-    await stableRemote();
-    const temporary = await fs.mkdtemp(path.join(os.tmpdir(),'wsftp-compare-'));
-    try {
-      const copy = path.join(temporary,'remote');
-      if (cachedRemote === undefined) await t.download(remoteFile(c,change.relative),copy);
+  const observations = cache ?? new SyncCache();
+  const comparison = new RemoteComparison(t,c,observations,cancelled,log);
+  try {
+    for (const change of candidates) {
       cancelled();
-      const localHash = cachedLocal ?? await crc32File(file,cancelled);
-      const remoteHash = cachedRemote ?? await crc32File(copy,cancelled);
+      await comparison.checkpoint();
+      if (!change.target || change.source.size !== change.target.size) {
+        log(`${change.relative}: ${!change.target ? 'missing destination' : `size differs (${change.source.size} vs ${change.target.size} bytes)`}`);
+        changes.push(change); continue;
+      }
+      // Equal sizes need content verification, regardless of modification time.
+      log(`CRC32 verification: ${change.relative}; size=${change.source.size}; source mtime=${change.source.mtime}; target mtime=${change.target.mtime}`);
+      const file = await localPath(root,change.relative);
+      const expectedLocal = local.get(change.relative)!;
+      const expectedRemote = remote.get(change.relative)!;
+      const stableLocal = async () => {
+        const current = await fs.stat(await localPath(root,change.relative));
+        if (current.size !== expectedLocal.size || current.mtimeMs !== expectedLocal.mtime) throw new UserError('Local file changed during content verification. Run synchronization again.');
+      };
+      const cachedLocal = cache?.get('local',change.relative,expectedLocal);
+      const cachedRemote = cache?.get('remote',change.relative,expectedRemote);
+      if (cachedLocal !== undefined && cachedRemote !== undefined) {
+        log(`Cache hit: ${change.relative}; local CRC32=${cachedLocal}; remote CRC32=${cachedRemote}`);
+        if (cachedLocal !== cachedRemote) changes.push(change);
+        else comparison.acknowledge(change.relative,`${expectedLocal.size}:${cachedLocal}`);
+        continue;
+      }
       await stableLocal();
-      await stableRemote();
+      // Local disk hashing and a single remote transfer may run concurrently;
+      // never overlap two commands on the same FTP control connection.
+      const hashes = await Promise.allSettled([
+        cachedLocal !== undefined ? Promise.resolve(cachedLocal) : crc32File(file,cancelled),
+        comparison.hash(change.relative,expectedRemote)
+      ]);
+      for (const result of hashes) if (result.status === 'rejected') throw result.reason;
+      const localHash = (hashes[0] as PromiseFulfilledResult<string>).value;
+      const remoteHash = (hashes[1] as PromiseFulfilledResult<string>).value;
+      await stableLocal();
       cancelled();
-      cache?.set('local',change.relative,expectedLocal,localHash);
-      cache?.set('remote',change.relative,expectedRemote,remoteHash);
+      observations.set('local',change.relative,expectedLocal,localHash);
       log(`${change.relative}: local CRC32=${localHash}; remote CRC32=${remoteHash}`);
       if (localHash !== remoteHash) { changes.push(change); log(`Content differs: ${change.relative}`); }
-      else { cache?.acknowledge(change.relative,`${expectedLocal.size}:${localHash}`); log(`Already synchronized (matching size and CRC32): ${change.relative}`); }
-    } finally { await fs.rm(temporary,{recursive:true,force:true}); }
+      else { comparison.acknowledge(change.relative,`${expectedLocal.size}:${localHash}`); log(`Already synchronized (matching size and CRC32): ${change.relative}`); }
+    }
+    await comparison.flush();
+    await observations.checkpoint(true);
+    return changes;
+  } catch (error) {
+    // Only fully verified batches and local hashes have reached the cache.
+    try { await observations.checkpoint(true); } catch { /* Preserve the comparison failure. */ }
+    throw error;
   }
-  return changes;
 }

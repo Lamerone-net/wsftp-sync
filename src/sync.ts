@@ -1,10 +1,11 @@
 import * as fs from 'node:fs/promises';
 import path from 'node:path';
-import os from 'node:os';
 import { Config, Entry, excluded, forDirection, remoteFile, safeRelative, UserError } from './core';
 import { Transport, inspectRemote } from './transport';
 import { SyncCache } from './cache';
 import { localPath, crc32File, download } from './files';
+import { remoteCRC32 } from './checksum';
+import { RemoteComparison } from './comparison';
 
 export type SyncMode = 'local' | 'remote' | 'both';
 export interface TreeEntry extends Entry { directory: boolean; blocked?: boolean }
@@ -53,8 +54,8 @@ export async function scanTrees(t: Transport, root: string, c: Config, check: ()
       if (e.directory && !blocked) await walkRemote(remoteFile(c,relative),relative+'/',depth+1);
     }
   }
-  await walkLocal(root,'');
-  await walkRemote(c.remote_path,'',0);
+  const scans = await Promise.allSettled([walkLocal(root,''),walkRemote(c.remote_path,'',0)]);
+  for (const result of scans) if (result.status === 'rejected') throw result.reason;
   return {local,remote};
 }
 
@@ -82,19 +83,15 @@ export async function fingerprint(t: Transport, root: string, c: Config, side: '
     if (!same(entry,now)) throw new UserError('File changed during content verification. Run synchronization again.');
   };
   await validate();
-  let temporary: string | undefined;
-  try {
-    let file = await localPath(root,relative);
-    if (side === 'remote') {
-      temporary = await fs.mkdtemp(path.join(os.tmpdir(),'wsftp-hash-'));
-      file = path.join(temporary,'content');
-      await t.download(remoteFile(c,relative),file);
-    }
-    const crc = await crc32File(file,check);
-    await validate(); check();
-    cache.set(side,relative,entry,crc);
-    return `${entry.size}:${crc}`;
-  } finally { if (temporary) await fs.rm(temporary,{recursive:true,force:true}); }
+  let crc: string;
+  if (side === 'remote') {
+    const result = await remoteCRC32(t,remoteFile(c,relative),check);
+    if (result.size !== entry.size) throw new UserError('Remote file size changed during content verification. Run synchronization again.');
+    crc = result.hash;
+  } else crc = await crc32File(await localPath(root,relative),check);
+  await validate(); check();
+  cache.set(side,relative,entry,crc);
+  return `${entry.size}:${crc}`;
 }
 
 export async function buildSyncPlan(t: Transport, root: string, c: Config, mode: SyncMode, snapshot: Snapshot, cache: SyncCache, check: () => void, progress?: (message: string) => void): Promise<SyncAction[]> {
@@ -107,46 +104,76 @@ export async function buildSyncPlan(t: Transport, root: string, c: Config, mode:
     return parts.some((_,i) => blocked.has(parts.slice(0,i+1).join('/')));
   };
   let inspected = 0;
-  for (const relative of paths) {
-    check();
-    progress?.(`Comparing ${++inspected}/${paths.length}: ${relative}`);
-    const l = local.get(relative), r = remote.get(relative);
-    if (l?.blocked || r?.blocked) { blocked.add(relative); continue; }
-    if (underBlocked(relative)) continue;
-    if (l && r && l.directory !== r.directory) {
-      actions.push({relative,kind:'conflict',directory:false,note:'File/directory mismatch; resolve manually.'});
-      blocked.add(relative); continue;
+  const comparison = new RemoteComparison(t,c,cache,check,progress);
+  const uploadRules = forDirection(c,'upload'), downloadRules = forDirection(c,'download');
+  try {
+    for (const relative of paths) {
+      check();
+      await comparison.checkpoint();
+      progress?.(`Comparing ${++inspected}/${paths.length}: ${relative}`);
+      const l = local.get(relative), r = remote.get(relative);
+      if (l?.blocked || r?.blocked) { blocked.add(relative); continue; }
+      if (underBlocked(relative)) continue;
+      if (l && r && l.directory !== r.directory) {
+        actions.push({relative,kind:'conflict',directory:false,note:'File/directory mismatch; resolve manually.'});
+        blocked.add(relative); continue;
+      }
+      const directory = (l ?? r)!.directory;
+      const allow = (direction: 'upload' | 'download') => {
+        const rules = direction === 'upload' ? uploadRules : downloadRules;
+        return !excluded(relative,rules.exclude,rules.legacyIgnore);
+      };
+      if (!l || !r) {
+        let kind: SyncAction['kind'];
+        if (mode === 'local') kind = l ? (directory ? 'mkdir-remote' : 'upload') : 'delete-remote';
+        else if (mode === 'remote') kind = r ? (directory ? 'mkdir-local' : 'download') : 'delete-local';
+        else kind = l ? (directory ? 'mkdir-remote' : 'upload') : (directory ? 'mkdir-local' : 'download');
+        const direction = kind === 'upload' || kind === 'mkdir-remote' || kind === 'delete-remote' ? 'upload' : 'download';
+        if (allow(direction)) actions.push({relative,kind,directory});
+        else blocked.add(relative);
+        continue;
+      }
+      if (directory) continue;
+      if (mode === 'both' && !allow('upload') && !allow('download')) continue;
+      // Dominance can decide different-size files without downloading for comparison.
+      if (mode !== 'both' && l.size !== r.size) {
+        actions.push({relative,kind:mode === 'local' ? 'upload' : 'download',directory:false}); continue;
+      }
+      if (mode === 'both' && l.size !== r.size) {
+        const baseline = cache.baseline(relative);
+        const baselineSize = baseline ? Number(baseline.split(':')[0]) : undefined;
+        let kind: SyncAction['kind'] = 'conflict';
+        // A side with a different size cannot match the shared baseline. Only
+        // hash the other side, if its size still permits an unchanged baseline.
+        if (l.size === baselineSize) {
+          if (await fingerprint(t,root,c,'local',relative,l,cache,check) === baseline) kind = 'download';
+        } else if (r.size === baselineSize) {
+          if (`${r.size}:${await comparison.hash(relative,r)}` === baseline) kind = 'upload';
+        }
+        if (kind === 'conflict' || allow(kind)) actions.push({relative,kind,directory:false,
+          note:kind === 'conflict' ? (baseline ? 'Both sides changed.' : 'No shared synchronization baseline.') : undefined});
+        continue;
+      }
+      const hashes = await Promise.allSettled([
+        fingerprint(t,root,c,'local',relative,l,cache,check),
+        comparison.hash(relative,r).then(hash => `${r.size}:${hash}`)
+      ]);
+      for (const result of hashes) if (result.status === 'rejected') throw result.reason;
+      const lh = (hashes[0] as PromiseFulfilledResult<string>).value;
+      const rh = (hashes[1] as PromiseFulfilledResult<string>).value;
+      if (lh === rh) { comparison.acknowledge(relative,lh); continue; }
+      if (mode !== 'both') {
+        actions.push({relative,kind:mode === 'local' ? 'upload' : 'download',directory:false,fingerprint:mode === 'local' ? lh : rh}); continue;
+      }
+      const baseline = cache.baseline(relative);
+      const kind = baseline === rh ? 'upload' : baseline === lh ? 'download' : 'conflict';
+      if (kind === 'conflict' || allow(kind)) actions.push({relative,kind,directory:false,fingerprint:kind === 'upload' ? lh : kind === 'download' ? rh : undefined,note:baseline ? 'Both sides changed.' : 'No shared synchronization baseline.'});
     }
-    const directory = (l ?? r)!.directory;
-    const allow = (direction: 'upload' | 'download') => {
-      const rules = forDirection(c,direction);
-      return !excluded(relative,rules.exclude,rules.legacyIgnore);
-    };
-    if (!l || !r) {
-      let kind: SyncAction['kind'];
-      if (mode === 'local') kind = l ? (directory ? 'mkdir-remote' : 'upload') : 'delete-remote';
-      else if (mode === 'remote') kind = r ? (directory ? 'mkdir-local' : 'download') : 'delete-local';
-      else kind = l ? (directory ? 'mkdir-remote' : 'upload') : (directory ? 'mkdir-local' : 'download');
-      const direction = kind === 'upload' || kind === 'mkdir-remote' || kind === 'delete-remote' ? 'upload' : 'download';
-      if (allow(direction)) actions.push({relative,kind,directory});
-      else blocked.add(relative);
-      continue;
-    }
-    if (directory) continue;
-    if (mode === 'both' && !allow('upload') && !allow('download')) continue;
-    // Dominance can decide different-size files without downloading for comparison.
-    if (mode !== 'both' && l.size !== r.size) {
-      actions.push({relative,kind:mode === 'local' ? 'upload' : 'download',directory:false}); continue;
-    }
-    const lh = await fingerprint(t,root,c,'local',relative,l,cache,check);
-    const rh = await fingerprint(t,root,c,'remote',relative,r,cache,check);
-    if (lh === rh) { cache.acknowledge(relative,lh); continue; }
-    if (mode !== 'both') {
-      actions.push({relative,kind:mode === 'local' ? 'upload' : 'download',directory:false,fingerprint:mode === 'local' ? lh : rh}); continue;
-    }
-    const baseline = cache.baseline(relative);
-    const kind = baseline === rh ? 'upload' : baseline === lh ? 'download' : 'conflict';
-    if (kind === 'conflict' || allow(kind)) actions.push({relative,kind,directory:false,fingerprint:kind === 'upload' ? lh : kind === 'download' ? rh : undefined,note:baseline ? 'Both sides changed.' : 'No shared synchronization baseline.'});
+    await comparison.flush();
+    await cache.checkpoint(true);
+  } catch (error) {
+    try { await cache.checkpoint(true); } catch { /* Preserve the comparison failure. */ }
+    throw error;
   }
   // Never delete an ancestor of ignored content or a conflict. Directories are
   // removed non-recursively, after their individually reviewed child actions.

@@ -10,6 +10,9 @@ type Side = 'local' | 'remote';
 // pending even when the user cancels a preview after these hashes are saved.
 export class SyncCache {
   private initialized = false;
+  private revision = 0;
+  private savedRevision = 0;
+  private lastSaved = Date.now();
   private baselines = new Map<string, string>();
   private entries = new Map<string, CachedEntry>();
   constructor(private file?: string) {}
@@ -40,9 +43,11 @@ export class SyncCache {
   }
 
   baseline(relative: string): string | undefined { return this.baselines.get(relative); }
-  acknowledge(relative: string, fingerprint: string): void { this.baselines.set(relative,fingerprint); }
-  forget(relative: string): void { this.invalidate(relative); this.baselines.delete(relative); }
-  clearHashes(): void { this.entries.clear(); }
+  acknowledge(relative: string, fingerprint: string): void {
+    if (this.baselines.get(relative) !== fingerprint) { this.baselines.set(relative,fingerprint); this.revision++; }
+  }
+  forget(relative: string): void { this.invalidate(relative); if (this.baselines.delete(relative)) this.revision++; }
+  clearHashes(): void { if (this.entries.size) this.revision++; this.entries.clear(); }
 
   get(side: Side, relative: string, entry: Entry): string | undefined {
     const cached = this.entries.get(side+':'+relative);
@@ -52,23 +57,28 @@ export class SyncCache {
 
   set(side: Side, relative: string, entry: Entry, crc32: string): void {
     this.entries.set(side+':'+relative,{size:entry.size,mtime:entry.mtime,crc32});
+    this.revision++;
   }
 
   invalidate(relative: string): void {
-    this.entries.delete('local:'+relative);
-    this.entries.delete('remote:'+relative);
+    if (this.entries.delete('local:'+relative)) this.revision++;
+    if (this.entries.delete('remote:'+relative)) this.revision++;
   }
 
   prune(local: Map<string, Entry>, remote: Map<string, Entry>, c: Config, scope: string): void {
     for (const relative of this.baselines.keys()) {
-      if ((!scope || relative.startsWith(scope+'/')) && !excluded(relative,c.exclude,c.legacyIgnore) && !local.has(relative) && !remote.has(relative)) this.baselines.delete(relative);
+      if ((!scope || relative.startsWith(scope+'/')) && !excluded(relative,c.exclude,c.legacyIgnore) && !local.has(relative) && !remote.has(relative)) { this.baselines.delete(relative); this.revision++; }
     }
     for (const key of this.entries.keys()) {
       const separator = key.indexOf(':');
       const relative = key.slice(separator+1);
       const current = key.slice(0,separator) === 'local' ? local : remote;
-      if (excluded(relative,c.exclude,c.legacyIgnore) || ((!scope || relative.startsWith(scope+'/')) && !current.has(relative))) this.entries.delete(key);
+      if (excluded(relative,c.exclude,c.legacyIgnore) || ((!scope || relative.startsWith(scope+'/')) && !current.has(relative))) { this.entries.delete(key); this.revision++; }
     }
+  }
+
+  async checkpoint(force = false): Promise<void> {
+    if (this.revision !== this.savedRevision && (force || Date.now()-this.lastSaved >= 10000)) await this.save();
   }
 
   async save(): Promise<void> {
@@ -76,9 +86,12 @@ export class SyncCache {
     await fs.mkdir(path.dirname(this.file),{recursive:true});
     const temporary = this.file+'.'+randomUUID()+'.tmp';
     try {
+      const revision = this.revision;
       await fs.writeFile(temporary,JSON.stringify({version:1,entries:[...this.entries],baselines:[...this.baselines]}));
       await fs.rename(temporary,this.file);
       this.initialized = true;
+      this.savedRevision = revision;
+      this.lastSaved = Date.now();
     } finally { await fs.rm(temporary,{force:true}); }
   }
 }
