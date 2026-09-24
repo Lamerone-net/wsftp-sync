@@ -2,16 +2,16 @@ import * as vscode from 'vscode';
 import * as fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { Config, excluded, remoteFile, safeRelative, UserError, forDirection } from './core';
+import { Config, Change, excluded, safeRelative, UserError, forDirection } from './core';
 import { operationError, OperationStage } from './errors';
 import { SyncCache } from './cache';
 import { ChangeMonitor, CheckLoop } from './monitor';
-import { SyncMode, rulesForMode, scanTrees, buildSyncPlan, validateSnapshot, applySyncAction } from './sync';
+import { SyncMode, Snapshot, rulesForMode, scanTrees, buildSyncPlan, validateSnapshot, applySyncAction, transferFile, overwriteDownload } from './sync';
 import { disposeRegex } from './ignore';
 import { discoverProtocol } from './discovery';
 import { findConfig, readConfig, applyDiscovery, ensureConfig, InactiveConfig } from './config';
 import { connect, Transport, inspectRemote, TLSIdentity, TLSNotTrusted } from './transport';
-import { localPath, scanLocal, scanRemote, download, planSync } from './files';
+import { localPath, scanLocal, scanRemote, planSync } from './files';
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const log = vscode.window.createOutputChannel('WSFTP Sync');
@@ -243,11 +243,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         writeLog(`${relative}: ${remote ? 'remote file exists' : 'remote file is missing'}`);
         if (direction === 'download' && !remote) throw new Error('Remote file is missing.');
         const cache = await cacheFor(root,c);
-        cache.forget(relative);
-        await cache.save();
         progress.report({message:direction === 'upload' ? 'Uploading file...' : 'Downloading file...'});
-        if (direction === 'upload') await t.upload(local,remoteFile(c,relative));
-        else await download(t,c,root.uri.fsPath,relative);
+        await transferFile(t,root.uri.fsPath,c,relative,direction,cache);
         writeLog(`${direction} completed: ${relative}`);
         if (direction === 'upload') {
           showTransferStatus(direction,relative);
@@ -303,6 +300,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     if (direction) await synchronize(direction as 'upload' | 'download');
   });
   async function synchronize(direction: 'upload' | 'download', uri?: vscode.Uri, directory = false): Promise<void> {
+    const overwrite = direction === 'download' && directory;
     if (!vscode.workspace.isTrusted) throw new UserError('Workspace is not trusted.');
     if (directory && (!uri || uri.scheme !== 'file')) throw new UserError("Select a directory in Explorer.");
     const target = uri ?? vscode.window.activeTextEditor?.document.uri ?? vscode.workspace.workspaceFolders?.[0]?.uri;
@@ -329,10 +327,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           const local = await scanLocal(root.uri.fsPath,c,check,scope,writeLog);
           writeLog(`Local scan completed: ${local.size} files`);
           const remote = await scanRemote(t,c,check,scope);
-          writeLog(`Remote scan completed: ${remote.size} files; comparing size and CRC32`);
+          writeLog(`Remote scan completed: ${remote.size} files; ${overwrite ? 'preparing full directory download' : 'comparing size and CRC32'}`);
           cache.prune(local,remote,c,scope);
-          progress.report({message:cache.needsInitialization ? 'Creating the local cache. This may take a few minutes.' : 'Comparing files and synchronization history...'});
-          const changes = await planSync(t,c,root.uri.fsPath,local,remote,direction,check,writeLog,cache);
+          progress.report({message:overwrite ? 'Preparing full directory download...' : cache.needsInitialization ? 'Creating the local cache. This may take a few minutes.' : 'Comparing files and synchronization history...'});
+          const changes: Change[] = overwrite
+            ? [...remote.keys()].sort().map(relative => ({relative,source:remote.get(relative)!,target:local.get(relative),reason:local.has(relative) ? 'changed' : 'new'}))
+            : await planSync(t,c,root.uri.fsPath,local,remote,direction,check,writeLog,cache);
           await saveCache(cache);
           writeLog(`Comparison completed: ${changes.length} files to transfer`);
           const changed = new Map(changes.map(change => [change.relative,change.reason]));
@@ -341,33 +341,34 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           if (!changes.length) { void vscode.window.showInformationMessage('WSFTP: no files to transfer: files are synchronized.'); return; }
           const apply = {title:'Apply'};
           const cancel = {title:'Cancel',isCloseAffordance:true};
-          const detail = changes.map(change => `${change.reason === 'new' ? 'NEW' : 'MODIFIED'}  ${change.relative}`).join('\n');
+          const detail = changes.map(change => `${overwrite ? 'DOWNLOAD' : change.reason === 'new' ? 'NEW' : 'MODIFIED'}  ${change.relative}`).join('\n');
           const answer = await vscode.window.showWarningMessage(
             `WSFTP: ${direction} - ${scope || 'root'} - ${changes.length} files`,
-            {modal:true,detail:`${detail}\n\nApply transfers all listed files and overwrites existing files. Comparison uses size and cached CRC32; no files are deleted.`},apply,cancel);
+            {modal:true,detail:`${detail}\n\n${overwrite ? 'Apply downloads every listed file and overwrites existing files, in the displayed order. If multiple remote names refer to the same local file, the last listed copy wins. Exclusions are respected; no files are deleted.' : 'Apply transfers all listed files and overwrites existing files. Comparison uses size and cached CRC32; no files are deleted.'}`},apply,cancel);
           check();
           if (answer !== apply) { writeLog('Synchronization cancelled in preview; no files transferred.'); return; }
-          // Persist invalidation in batches before any transfer can partially write.
-          for (const change of changes) cache.forget(change.relative);
-          await cache.save();
+          const snapshot: Snapshot = {
+            local:new Map([...local].map(([relative,entry]) => [relative,{...entry,directory:false}])),
+            remote:new Map([...remote].map(([relative,entry]) => [relative,{...entry,directory:false}]))
+          };
           let completed = 0;
+          const written = new Map<string,string>();
           for (const change of changes) {
             check();
             writeLog(`Checking before transfer: ${change.relative}`);
             const currentRules = forDirection(await config(root),direction);
             if (excluded(change.relative,currentRules.exclude,currentRules.legacyIgnore)) throw new UserError('Exclusions changed after preview. Run synchronization again.');
             const file = await localPath(root.uri.fsPath,change.relative);
-            const baseline = local.get(change.relative);
-            let current;
-            try { current = await fs.stat(file); } catch(e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
-            if (Boolean(current) !== Boolean(baseline) || (current && baseline && (current.size !== baseline.size || current.mtimeMs !== baseline.mtime))) throw new UserError(`Local file changed after preview: ${change.relative}. Run synchronization again.`);
             if (vscode.workspace.textDocuments.some(d => d.uri.fsPath === file && d.isDirty)) throw new UserError('An open file has unsaved changes. Save before synchronizing.');
-            // Revalidate the remote file after the user has reviewed the preview.
-            const previous = remote.get(change.relative);
-            const now = await inspectRemote(t,c,change.relative);
-            if (Boolean(now) !== Boolean(previous) || (now && previous && (now.size !== previous.size || now.mtime !== previous.mtime))) throw new UserError(`Remote file changed after preview: ${change.relative}. Run synchronization again.`);
-            if (direction === 'upload') await t.upload(file,remoteFile(c,change.relative));
-            else await download(t,c,root.uri.fsPath,change.relative,change.source.mtime);
+            if (overwrite) {
+              // Dirty documents can use a different spelling of the same path.
+              for (const document of vscode.workspace.textDocuments.filter(d => d.isDirty && d.uri.scheme === 'file')) {
+                try {
+                  if (await fs.realpath(document.uri.fsPath) === await fs.realpath(file)) throw new UserError('An open file has unsaved changes. Save before synchronizing.');
+                } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+              }
+              await overwriteDownload(t,root.uri.fsPath,c,change.relative,cache,written,check);
+            } else await applySyncAction(t,root.uri.fsPath,c,{relative:change.relative,kind:direction,directory:false},snapshot,cache,check);
             completed++;
             showTransferStatus(direction,`${completed}/${changes.length}`);
             writeLog(`${direction} completed ${completed}/${changes.length}: ${change.relative}`);
@@ -425,23 +426,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           };
           await checkConfig();
           await validateSnapshot(t,root.uri.fsPath,c,snapshot,check);
-          // Persist conservative history before any write; checkpoint completed
-          // operations in batches instead of rewriting a large cache per file.
-          for (const action of pending) if (action.kind === 'upload' || action.kind === 'download') cache.forget(action.relative);
-          await cache.save();
           let completed = 0;
-          try {
-            for (const action of pending) {
-              check(); await checkConfig();
-              const file = await localPath(root.uri.fsPath,action.relative);
-              if (vscode.workspace.textDocuments.some(d => d.isDirty && (d.uri.fsPath === file || (action.directory && d.uri.fsPath.startsWith(file+path.sep))))) throw new UserError('An affected file has unsaved changes. Save before synchronizing.');
-              await applySyncAction(t,root.uri.fsPath,c,action,snapshot,cache,check);
-              completed++;
-              if (completed % 100 === 0) await cache.save();
-              trace(`${action.kind}: ${action.relative}; completed ${completed}/${pending.length}`);
-              progress.report({increment:100/pending.length,message:`${completed}/${pending.length}: ${action.relative}`});
-            }
-          } finally { await cache.save(); }
+          for (const action of pending) {
+            check(); await checkConfig();
+            const file = await localPath(root.uri.fsPath,action.relative);
+            if (vscode.workspace.textDocuments.some(d => d.isDirty && (d.uri.fsPath === file || (action.directory && d.uri.fsPath.startsWith(file+path.sep))))) throw new UserError('An affected file has unsaved changes. Save before synchronizing.');
+            await applySyncAction(t,root.uri.fsPath,c,action,snapshot,cache,check);
+            completed++;
+            trace(`${action.kind}: ${action.relative}; completed ${completed}/${pending.length}`);
+            progress.report({increment:100/pending.length,message:`${completed}/${pending.length}: ${action.relative}`});
+          }
           void vscode.window.showInformationMessage(`WSFTP: ${completed} operations completed; ${conflicts} conflicts skipped.`);
         });
       });

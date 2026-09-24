@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.1.56
+
+- Make Download dir an explicit full-file download with overwrite, respecting exclusions and retaining local-only files.
+- Download remote filename variants in deterministic preview order; when the local filesystem treats them as the same file, the last listed copy wins without a collision or stale-preview error.
+- Invalidate synchronization history for overwritten aliases, preserve unsaved-editor protection, and test repeated directory downloads and preview cancellation against a server listing case-distinct files.
+
+## 0.1.55
+
+- Resolve existing local filename aliases through the filesystem before planning directory and root synchronization, preventing false "Local file changed after preview" errors caused by case differences on Windows.
+- Preserve scanned metadata and genuine change detection, and reject ambiguous remote names that resolve to the same scanned local entry.
+- Add regression coverage for mixed-case filenames and directories, successful downloads, and actual edits after preview.
+
+## 0.1.54
+
+- Persist local and remote metadata, CRC32, and synchronization history after every verified upload or download, before reporting completion or starting the next file.
+- Use the same durable transfer path for individual files, upload on save, directory transfers, and root synchronization; invalidate only the file about to be written instead of clearing all pending history.
+- Finish checkpointing a completed transfer even when cancellation arrives in transit, keep failed transfers unacknowledged, and stop if cache persistence fails.
+- Hash completed downloads locally instead of downloading remote content a second time to establish their cache entry.
+
 ## 0.1.53
 
 - Include the affected relative file or directory path in content-verification, preview-revalidation, and transfer-change errors, identifying the local or remote side where applicable.

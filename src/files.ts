@@ -18,6 +18,29 @@ export async function localPath(root: string, relative: string): Promise<string>
   }
   return current;
 }
+
+// Match aliases using the filesystem, preserving case-sensitive volumes and
+// retaining the original scan metadata for subsequent change detection.
+export async function alignLocalNames<T extends Entry>(root: string, local: Map<string,T>, remote: Map<string,Entry>, check: () => void): Promise<void> {
+  let canonicalRoot: string | undefined;
+  const aliases: [string,string,T][] = [];
+  const claimed = new Set<string>();
+  for (const relative of remote.keys()) {
+    check();
+    if (local.has(relative)) continue;
+    let canonical: string;
+    try { canonical = await fs.realpath(await localPath(root,relative)); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
+    canonicalRoot ??= await fs.realpath(root);
+    const original = path.relative(canonicalRoot,canonical).split(path.sep).join('/');
+    const entry = local.get(original);
+    if (!entry) continue;
+    if (remote.has(original) || claimed.has(original)) throw new UserError(`Remote names refer to the same local path: ${original} and ${relative}. Resolve the filename collision before synchronizing.`);
+    claimed.add(original);
+    aliases.push([original,relative,entry]);
+  }
+  for (const [original,relative,entry] of aliases) { local.delete(original); local.set(relative,entry); }
+}
 export async function scanLocal(root: string, c: Config, cancelled: () => void, scope = '', log: (message: string) => void = () => {}): Promise<Map<string, Entry>> {
   const result = new Map<string, Entry>();
   if (scope && excluded(scope,c.exclude,c.legacyIgnore)) return result;
@@ -78,6 +101,7 @@ export async function download(t: Transport, c: Config, root: string, relative: 
 }
 
 export async function planSync(t: Transport, c: Config, root: string, local: Map<string, Entry>, remote: Map<string, Entry>, direction: 'upload' | 'download', cancelled: () => void, log: (message: string) => void = () => {}, cache?: SyncCache): Promise<Change[]> {
+  await alignLocalNames(root,local,remote,cancelled);
   const source = direction === 'upload' ? local : remote;
   const target = direction === 'upload' ? remote : local;
   const candidates: Change[] = [...source].map(([relative,entry]) => ({relative,source:entry,target:target.get(relative),reason:target.has(relative) ? 'changed' : 'new'}));

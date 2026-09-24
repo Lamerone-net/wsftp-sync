@@ -3,7 +3,7 @@ import path from 'node:path';
 import { Config, Entry, excluded, forDirection, remoteFile, safeRelative, UserError } from './core';
 import { Transport, inspectRemote } from './transport';
 import { SyncCache } from './cache';
-import { localPath, crc32File, download } from './files';
+import { localPath, crc32File, download, alignLocalNames } from './files';
 import { remoteCRC32 } from './checksum';
 import { RemoteComparison } from './comparison';
 
@@ -56,6 +56,7 @@ export async function scanTrees(t: Transport, root: string, c: Config, check: ()
   }
   const scans = await Promise.allSettled([walkLocal(root,''),walkRemote(c.remote_path,'',0)]);
   for (const result of scans) if (result.status === 'rejected') throw result.reason;
+  await alignLocalNames(root,local,remote,check);
   return {local,remote};
 }
 
@@ -222,17 +223,60 @@ export async function applySyncAction(t: Transport, root: string, c: Config, act
   } else {
     const sourceSide = kind === 'upload' ? 'local' : 'remote';
     const source = sourceSide === 'local' ? local! : remote!;
-    const hash = action.fingerprint ?? await fingerprint(t,root,c,sourceSide,relative,source,cache,check);
-    // The caller persists invalidation for the entire batch before applying it.
+    // Downloads are hashed from the completed local copy instead of reading the
+    // remote source twice. Uploads verify the local source before sending it.
+    let hash = kind === 'upload' ? action.fingerprint ?? await fingerprint(t,root,c,sourceSide,relative,source,cache,check) : undefined;
+    check();
+    // Invalidate only the file about to be written; untouched files keep their
+    // history if the operation stops. Persist this before a partial write is possible.
     cache.forget(relative);
+    await saveTransferCache(cache,relative);
     if (kind === 'upload') await t.upload(file,remote_path);
     else await download(t,c,root,relative,remote!.mtime);
+    const downloaded = kind === 'download' ? await currentLocal(root,relative) : undefined;
+    if (kind === 'download') hash = `${source.size}:${await crc32File(file,() => {})}`;
     const afterLocal = await currentLocal(root,relative), afterRemote = await currentRemote(t,c,relative);
     const afterSource = sourceSide === 'local' ? afterLocal : afterRemote;
-    if (!same(source,afterSource) || !afterLocal || !afterRemote || afterLocal.size !== afterRemote.size) throw new UserError(`File changed during transfer: ${relative}. Run synchronization again.`);
-    cache.acknowledge(relative,hash);
-    cache.set('local',relative,afterLocal,hash.split(':')[1]);
-    cache.set('remote',relative,afterRemote,hash.split(':')[1]);
+    if (!same(source,afterSource) || !afterLocal || !afterRemote || afterLocal.size !== afterRemote.size || (kind === 'download' && !same(downloaded,afterLocal))) throw new UserError(`File changed during transfer: ${relative}. Run synchronization again.`);
+    cache.acknowledge(relative,hash!);
+    cache.set('local',relative,afterLocal,hash!.split(':')[1]);
+    cache.set('remote',relative,afterRemote,hash!.split(':')[1]);
     snapshot.local.set(relative,afterLocal); snapshot.remote.set(relative,afterRemote);
   }
+  // Complete this durable checkpoint even if cancellation arrived in transit.
+  await saveTransferCache(cache,relative);
+}
+
+async function saveTransferCache(cache: SyncCache, relative: string): Promise<void> {
+  try { await cache.save(); }
+  catch { throw new UserError(`Cannot save transfer cache for ${relative}. Check extension storage permissions and free disk space before continuing.`); }
+}
+
+export async function transferFile(t: Transport, root: string, c: Config, relative: string, direction: 'upload' | 'download', cache: SyncCache): Promise<void> {
+  const local = await currentLocal(root,relative), remote = await currentRemote(t,c,relative);
+  if (local?.directory || remote?.directory) throw new UserError(`Select a regular file: ${relative}.`);
+  if (!(direction === 'upload' ? local : remote)) throw new UserError(`Source file is missing: ${relative}.`);
+  const snapshot: Snapshot = {local:new Map(local ? [[relative,local]] : []),remote:new Map(remote ? [[relative,remote]] : [])};
+  await applySyncAction(t,root,c,{relative,kind:direction,directory:false},snapshot,cache,() => {});
+}
+
+// Explicit directory downloads authorize overwrites, including earlier downloads
+// to the same filesystem path. Keep only the last copy's synchronization history.
+export async function overwriteDownload(t: Transport, root: string, c: Config, relative: string, cache: SyncCache, written: Map<string,string>, check: () => void): Promise<void> {
+  check();
+  const file = await localPath(root,relative);
+  let canonical: string | undefined;
+  try { canonical = await fs.realpath(file); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  if (canonical) {
+    const previous = written.get(canonical) ?? path.relative(await fs.realpath(root),canonical).split(path.sep).join('/');
+    if (previous !== relative) {
+      cache.forget(previous);
+      await saveTransferCache(cache,relative);
+    }
+  }
+  check();
+  await transferFile(t,root,c,relative,'download',cache);
+  if (canonical) written.delete(canonical);
+  written.set(await fs.realpath(file),relative);
 }

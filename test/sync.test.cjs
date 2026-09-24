@@ -8,6 +8,43 @@ const { parseConfig } = require('../dist/core');
 const { scanTrees, buildSyncPlan, applySyncAction, validateSnapshot, rulesForMode } = require('../dist/sync');
 const check = () => {};
 
+test('directory download matches filesystem aliases without losing preview change protection', async t => fixture(async f => {
+  const { scanLocal, scanRemote, planSync } = require('../dist/files');
+  const localName = 'books/Coboldo Melo [en_us]_lit_celo.jpg';
+  const remoteName = 'books/Coboldo Melo [en_US]_lit_celo.jpg';
+  await f.put(f.local,localName,'old');
+  try { await fs.stat(path.join(f.local,remoteName)); }
+  catch { t.skip('Requires a case-insensitive filesystem'); return; }
+  await f.put(f.remote,remoteName,'downloaded content');
+  const local = await scanLocal(f.local,f.c,check,'books');
+  const remote = await scanRemote(f.t,f.c,check,'books');
+  const changes = await planSync(f.t,f.c,f.local,local,remote,'download',check,undefined,f.cache);
+  assert.equal(changes.length,1);
+  assert.equal(changes[0].reason,'changed');
+  const snapshot = {
+    local:new Map([...local].map(([name,entry]) => [name,{...entry,directory:false}])),
+    remote:new Map([...remote].map(([name,entry]) => [name,{...entry,directory:false}]))
+  };
+  const action = {relative:remoteName,kind:'download',directory:false};
+  await applySyncAction(f.t,f.local,f.c,action,snapshot,f.cache,check);
+  assert.equal(await fs.readFile(path.join(f.local,localName),'utf8'),'downloaded content');
+  await f.put(f.local,localName,'real edit after preview');
+  await assert.rejects(applySyncAction(f.t,f.local,f.c,action,snapshot,f.cache,check),/Local file changed after preview/);
+}));
+
+test('tree synchronization matches local aliases and rejects ambiguous remote names', async t => fixture(async f => {
+  await f.put(f.local,'Books/cover.jpg','old');
+  try { await fs.stat(path.join(f.local,'books/COVER.jpg')); }
+  catch { t.skip('Requires a case-insensitive filesystem'); return; }
+  await f.put(f.remote,'books/COVER.jpg','new remote content');
+  const p = await f.plan('remote');
+  assert.deepEqual(p.actions.map(a => [a.kind,a.relative]),[['download','books/COVER.jpg']]);
+  await f.apply(p);
+  const { alignLocalNames } = require('../dist/files');
+  const entry = {size:1,mtime:1};
+  await assert.rejects(alignLocalNames(f.local,new Map([['Books/COVER.jpg',entry]]),new Map([['Books/COVER.jpg',entry],['books/cover.jpg',entry]]),check),/same local path/);
+}));
+
 async function fixture(run) {
   const base = await fs.mkdtemp(path.join(os.tmpdir(),'wsftp-modes-'));
   const local = path.join(base,'local'), remote = path.join(base,'remote');
@@ -37,12 +74,9 @@ async function fixture(run) {
   };
   const apply = async p => {
     await validateSnapshot(t,local,p.rules,p.snapshot,check);
-    for (const a of p.actions) if (a.kind === 'upload' || a.kind === 'download') cache.forget(a.relative);
-    await cache.save();
-    try { for (const a of p.actions) await applySyncAction(t,local,p.rules,a,p.snapshot,cache,check); }
-    finally { await cache.save(); }
+    for (const a of p.actions) await applySyncAction(t,local,p.rules,a,p.snapshot,cache,check);
   };
-  try { await run({local,remote,t,c,put,plan,apply,cache,reload:async () => {cache = new SyncCache(path.join(base,'cache.json')); await cache.load(); return cache;}}); }
+  try { await run({local,remote,t,c,put,plan,apply,cache,cacheFile:path.join(base,'cache.json'),reload:async () => {cache = new SyncCache(path.join(base,'cache.json')); await cache.load(); return cache;}}); }
   finally { await fs.rm(base,{recursive:true,force:true}); }
 }
 
@@ -146,4 +180,57 @@ test('failed upload drops old agreement and does not turn partial remote content
   await assert.rejects(f.apply(p),/connection lost/);
   await f.reload();
   assert.equal((await f.plan('both')).actions[0].kind,'conflict');
+}));
+
+test('each completed upload and download is durable before cancellation or the next file', async () => {
+  for (const direction of ['upload','download']) await fixture(async f => {
+    for (const name of ['a','b','untouched']) {
+      await f.put(f.local,name,'original'); await f.put(f.remote,name,'original');
+    }
+    await f.plan('both');
+    const previous=f.cache.baseline('b');
+    const source=direction==='upload' ? f.local : f.remote;
+    await f.put(source,'a','updated a content'); await f.put(source,'b','updated b content');
+    const mode=direction==='upload' ? 'local' : 'remote';
+    const p=await f.plan(mode);
+    let cancelled=false, transfers=0;
+    const transfer=f.t[direction];
+    f.t[direction]=async (...args) => { await transfer(...args); transfers++; cancelled=true; };
+    const cancel=() => { if (cancelled) throw new Error('Cancelled'); };
+    await applySyncAction(f.t,f.local,p.rules,p.actions[0],p.snapshot,f.cache,cancel);
+    const persisted=new SyncCache(f.cacheFile); await persisted.load();
+    assert.ok(persisted.get('local','a',p.snapshot.local.get('a')));
+    assert.equal(persisted.get('local','a',p.snapshot.local.get('a')),persisted.get('remote','a',p.snapshot.remote.get('a')));
+    assert.notEqual(persisted.baseline('a'),previous);
+    assert.equal(persisted.baseline('b'),previous,'Untouched pending files retain history');
+    await assert.rejects(applySyncAction(f.t,f.local,p.rules,p.actions[1],p.snapshot,f.cache,cancel),/Cancelled/);
+    await f.reload();
+    assert.deepEqual((await f.plan(mode)).actions.map(a => a.relative),['b']);
+    assert.equal(transfers,1,'Completed downloads are not fetched again to establish their hash');
+  });
+});
+
+test('a failed second upload leaves the first transfer saved and the failed one unacknowledged', async () => fixture(async f => {
+  for (const name of ['a','b']) { await f.put(f.local,name,'original'); await f.put(f.remote,name,'original'); }
+  await f.plan('both');
+  for (const name of ['a','b']) await f.put(f.local,name,'updated content');
+  const p=await f.plan('local');
+  await applySyncAction(f.t,f.local,p.rules,p.actions[0],p.snapshot,f.cache,check);
+  f.t.upload=async (_local,remote) => { await f.put(f.remote,remote,'partial'); throw new Error('connection lost'); };
+  await assert.rejects(applySyncAction(f.t,f.local,p.rules,p.actions[1],p.snapshot,f.cache,check),/connection lost/);
+  const saved=new SyncCache(f.cacheFile); await saved.load();
+  assert.ok(saved.baseline('a'));
+  assert.equal(saved.baseline('b'),undefined);
+  assert.equal(saved.get('local','b',p.snapshot.local.get('b')),undefined);
+  assert.equal(saved.get('remote','b',p.snapshot.remote.get('b')),undefined);
+}));
+
+test('cache persistence failures stop a transfer before writing any remote content', async () => fixture(async f => {
+  await f.put(f.local,'file','new content');
+  const p=await f.plan('local');
+  f.cache.save=async () => { throw new Error('Disk full'); };
+  let uploaded=false;
+  f.t.upload=async () => { uploaded=true; };
+  await assert.rejects(applySyncAction(f.t,f.local,p.rules,p.actions[0],p.snapshot,f.cache,check),/Cannot save transfer cache for file/);
+  assert.equal(uploaded,false);
 }));

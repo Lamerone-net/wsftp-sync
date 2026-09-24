@@ -15,7 +15,7 @@ test('saved documents and keyboard upload command use wsftp-sync configuration; 
     const uri = {scheme:'file',fsPath:path.join(rootPath,'file.txt')};
     await fs.writeFile(uri.fsPath,'hello');
     const root = {uri:{fsPath:rootPath,toString:() => rootPath}};
-    const commands = new Map(), uploads = [], errors = [], statuses = [];
+    const commands = new Map(), uploads = [], downloads = [], errors = [], statuses = [];
     let onSave, apply = true, connectionFailure, listFailure, uploadFailure, closeFailure;
     const previews = [];
     const diagnostics = [];
@@ -27,6 +27,7 @@ test('saved documents and keyboard upload command use wsftp-sync configuration; 
     const outputShows = [], outputLines = [], outputReplacements = [];
     let connectionStarted, connectionGate;
     const remoteFiles = new Map();
+    const remoteContents = new Map();
     const vscode = {
       debug:{activeDebugConsole:{appendLine:message => diagnostics.push(message)}},
       CancellationError: class extends Error {},
@@ -57,16 +58,44 @@ test('saved documents and keyboard upload command use wsftp-sync configuration; 
         debug('> PASS test');
         debug('< 220 Welcome\r\nServer ready');
         assert.equal(config.protocol,'ftps'); assert.equal(secret,'test');
-        return {list:async remote => { if (listFailure) throw listFailure; return remote === '/' ? [...remoteFiles].map(([name,e]) => ({name,...e})) : []; },download:async (remote,local) => fs.writeFile(local,'downloaded'),upload:async (local,remote) => { if (uploadFailure) throw uploadFailure; uploads.push([local,remote]); },close:async () => { if (closeFailure) throw closeFailure; }};
+        return {list:async remote => {
+          if (listFailure) throw listFailure;
+          const prefix=remote==='/' ? '' : remote.slice(1)+'/';
+          const entries=new Map();
+          for (const [name,entry] of remoteFiles) {
+            if (!name.startsWith(prefix)) continue;
+            const rest=name.slice(prefix.length), child=rest.split('/')[0];
+            entries.set(child,rest.includes('/') ? {name:child,directory:true,symlink:false,size:0,mtime:10000} : {name:child,...entry});
+          }
+          return [...entries.values()];
+        },download:async (remote,local) => { downloads.push(remote); await fs.writeFile(local,remoteContents.get(remote.slice(1)) ?? 'downloaded'); },upload:async (local,remote) => {
+          if (uploadFailure) throw uploadFailure;
+          uploads.push([local,remote]);
+          const content=await fs.readFile(local);
+          remoteContents.set(remote.slice(1),content);
+          remoteFiles.set(remote.slice(1),{size:content.length,mtime:10000,directory:false,symlink:false});
+        },close:async () => { if (closeFailure) throw closeFailure; }};
       }
     } : realRequire(id)}, {filename});
-    const context = {extensionPath:path.join(__dirname,'..'),subscriptions:[],globalState:{get:key => trust.get(key),update:async (key,value) => trust.set(key,value)},secrets:{get:async () => undefined}};
+    const context = {extensionPath:path.join(__dirname,'..'),globalStorageUri:{fsPath:path.join(rootPath,'.vscode','single-storage')},subscriptions:[],globalState:{get:key => trust.get(key),update:async (key,value) => trust.set(key,value)},secrets:{get:async () => undefined}};
+    const assertPersisted = async relative => {
+      const { SyncCache } = realRequire('./cache');
+      const config=realRequire('./core').parseConfig(JSON.parse(await fs.readFile(configPath,'utf8')));
+      const cache=new SyncCache(SyncCache.filename(context.globalStorageUri.fsPath,rootPath,config));
+      await cache.load();
+      const stat=await fs.stat(path.join(rootPath,relative));
+      const localHash=cache.get('local',relative,{size:stat.size,mtime:stat.mtimeMs});
+      assert.ok(localHash,relative);
+      assert.equal(cache.get('remote',relative,remoteFiles.get(relative)),localHash);
+      assert.equal(cache.baseline(relative),`${stat.size}:${localHash}`);
+    };
     await exports.activate(context);
     await onSave({uri});
     assert.ok(diagnostics.some(line => line.includes('< 220 Welcome\r\nServer ready')));
     assert.ok(diagnostics.some(line => line.includes('> PASS [REDACTED]')));
     assert.ok(diagnostics.every(line => !line.includes('test')));
     assert.equal(uploads.length,1);
+    await assertPersisted('file.txt');
     assert.deepEqual(statuses, [{text:'$(check) Upload file.txt: successful',timeout:5000}]);
     assert.equal(progressNotices.length,0,'Upload on save stays quiet');
     const started = new Promise(resolve => { connectionStarted = resolve; });
@@ -105,6 +134,7 @@ test('saved documents and keyboard upload command use wsftp-sync configuration; 
     assert.match(errors.pop(), /^WSFTP: Upload failed\./);
     uploadFailure = closeFailure = undefined;
     trust.clear();
+    remoteFiles.clear(); remoteContents.clear();
     const manifest = require('../package.json');
     const binding = {command:'wsftp.uploadRoot'};
     assert.deepEqual(manifest.contributes.keybindings.map(b => [b.key,b.command]),[['ctrl+alt+u','wsftp.syncUploadRoot'],['ctrl+alt+d','wsftp.syncDownloadRoot'],['ctrl+alt+s','wsftp.bidirectional']]);
@@ -112,6 +142,7 @@ test('saved documents and keyboard upload command use wsftp-sync configuration; 
     assert.equal(uploads.length,2);
     assert.equal(statuses.at(-1).text,'$(check) Upload 1/1: successful');
     assert.equal(uploads[0][1],'/file.txt');
+    remoteFiles.clear(); remoteContents.clear();
     assert.ok(commands.has('wsftp.downloadRoot'));
     await fs.mkdir(path.join(rootPath,'sub'));
     await fs.writeFile(path.join(rootPath,'sub','nested.txt'),'nested');
@@ -128,6 +159,7 @@ test('saved documents and keyboard upload command use wsftp-sync configuration; 
     await commands.get('wsftp.uploadDir')({scheme:'file',fsPath:path.join(rootPath,'sub')});
     assert.equal(uploads.length,3);
     assert.equal(uploads.at(-1)[1],'/sub/nested.txt');
+    await assertPersisted('sub/nested.txt');
     assert.doesNotMatch(previews.at(-1).detail,/  file.txt/);
     remoteFiles.set('remote.txt',{size:10,mtime:10000,directory:false,symlink:false});
     apply = false;
@@ -153,10 +185,34 @@ test('saved documents and keyboard upload command use wsftp-sync configuration; 
     apply = true;
     await commands.get('wsftp.downloadRoot')();
     assert.equal(await fs.readFile(path.join(rootPath,'remote.txt'),'utf8'),'downloaded');
+    await assertPersisted('remote.txt');
     assert.equal(statuses.at(-1).text,'$(check) Download 1/1: successful');
     assert.equal(errors.length,0);
     assert.equal(previews.filter(p => p.title === 'Verify the FTPS server certificate.').length,1);
     assert.equal(trust.get('tls:localhost:21'),'a'.repeat(64));
+    // A case-sensitive server can list both names even on a Windows test host.
+    for (const [name,content] of [['sub/Community.pdf','first'],['sub/community.pdf','final']]) {
+      remoteFiles.set(name,{size:content.length,mtime:10000,directory:false,symlink:false});
+      remoteContents.set(name,content);
+    }
+    await fs.writeFile(path.join(rootPath,'sub','local-only.txt'),'keep');
+    const directoryUri = {scheme:'file',fsPath:path.join(rootPath,'sub')};
+    for (let attempt=0;attempt<2;attempt++) {
+      downloads.length=0;
+      await commands.get('wsftp.downloadDir')(directoryUri);
+      assert.equal(errors.length,0);
+      assert.deepEqual(downloads,['/sub/Community.pdf','/sub/community.pdf','/sub/nested.txt']);
+      assert.match(previews.at(-1).detail,/last listed copy wins/);
+      assert.equal(await fs.readFile(path.join(rootPath,'sub','community.pdf'),'utf8'),'final');
+      assert.equal(await fs.readFile(path.join(rootPath,'sub','local-only.txt'),'utf8'),'keep');
+      await assertPersisted('sub/community.pdf');
+    }
+    apply=false;
+    downloads.length=0;
+    await commands.get('wsftp.downloadDir')(directoryUri);
+    assert.equal(downloads.length,0,'Cancelling the preview performs no downloads');
+    apply=true;
+    for (const name of ['sub/Community.pdf','sub/community.pdf']) { remoteFiles.delete(name); remoteContents.delete(name); }
     const settings = JSON.parse(await fs.readFile(configPath,'utf8'));
     await fs.writeFile(configPath,JSON.stringify({...settings,ignore_upload:['sub','file.txt','remote.txt'],ignore_download:['remote.txt']}));
     const previewCount = previews.length;

@@ -6,10 +6,10 @@ A TypeScript extension for VS Code that transfers files over SFTP, FTP, and expl
 
 ## Local installation
 
-In VS Code, run **Extensions: Install from VSIX...**, select `wsftp-sync-0.1.53.vsix`, and open a trusted workspace. Alternatively:
+In VS Code, run **Extensions: Install from VSIX...**, select `wsftp-sync-0.1.54.vsix`, and open a trusted workspace. Alternatively:
 
 ```sh
-code --install-extension wsftp-sync-0.1.53.vsix
+code --install-extension wsftp-sync-0.1.54.vsix
 ```
 
 ## Configuration
@@ -121,7 +121,7 @@ The existing transfer-only commands remain available:
 - **WSFTP: Upload file** and **WSFTP: Download file** operate on the file selected in Explorer or the active editor. Downloads require confirmation before overwriting.
 - **WSFTP: Upload root** and **WSFTP: Download root** compare local/server and server/local files from the project root to the configured `remote_path`. No directory prompt is shown. In multi-root workspaces, these commands use the active file's workspace folder, or the first folder if no workspace file is active. Search for `wsftp` in Keyboard Shortcuts to customize the bindings.
 - The preview lists files that are new or differ in size or CRC32. **Apply**, the default Enter action, transfers the entire list; **Cancel** or Escape cancels. There is no second confirmation. A message appears when no differences are found.
-- The Explorer folder context menu provides **WSFTP: Upload dir** and **WSFTP: Download dir**, with the same preview restricted to the selected directory and its descendants. Paths remain relative to the workspace root: `sub/file.php` maps to `remote_path/sub/file.php`.
+- The Explorer folder context menu provides **WSFTP: Upload dir** and **WSFTP: Download dir**, restricted to the selected directory and its descendants. **Download dir** previews and downloads every included remote file, overwriting existing local files even when their content already matches. Files are transferred in the displayed, case-sensitive lexical order; when multiple remote names resolve to the same local file (for example, `Community.pdf` and `community.pdf` on Windows), the last listed copy wins. Exclusions still apply, unsaved editor changes are protected, and local-only files are retained. **Upload dir** retains content comparison. Paths remain relative to the workspace root: `sub/file.php` maps to `remote_path/sub/file.php`.
 - The synchronization command (`wsftp.sync`) lets you choose upload or download and opens the same preview for the root. Downloads include remote files that do not yet exist locally.
 - The existing transfer-only root and Explorer upload/download commands include all nonexcluded subdirectories and remain transfer-only; the new dominance commands above also propose deletions.
 - Operations run sequentially within each workspace folder. Commands that require workspace selection prompt when multiple folders are available; root synchronization follows the active-file rule above.
@@ -167,7 +167,7 @@ CRC32 is calculated incrementally as remote content arrives, without writing com
 
 Remote verification reuses directory listings within batches of up to 32 files from the same directory, then reads fresh listings to validate file metadata and parent paths before committing hashes and shared baselines. Long comparisons checkpoint verified progress at roughly ten-second boundaries between files; cancellation or failure saves individually verified files. A changed remote file is excluded from the cache, while other files in the same batch are validated and retained; its prior synchronization baseline remains available for conflict detection. Restarted comparisons scan directory metadata again and reuse saved hashes when metadata still matches, reading content only for changed or unfinished files. Missing timestamps still require content verification. During initial synchronization, large remote reads report byte progress.
 
-The first comparison still needs to receive uncached content; subsequent scans list remote directories but avoid downloading unchanged files for verification. Changes that preserve both size and mtime require **WSFTP: Clear synchronization cache** followed by synchronization to be detected. Cancelled previews keep differences pending. The new modes record successful transfers in the cache and synchronization history. Legacy transfer-only commands invalidate affected cache entries before writing. Clearing the cache preserves synchronization history, so a full verification can still identify which side changed. Cancelled previews never acknowledge differing contents. Bidirectional comparison may need remote hashes even for different-size files to identify the changed side.
+The first comparison still needs to receive uncached content; subsequent scans list remote directories but avoid downloading unchanged files for verification. Changes that preserve both size and mtime require **WSFTP: Clear synchronization cache** followed by synchronization to be detected. Cancelled previews keep differences pending. Every verified upload and download, including individual files, upload on save, directory transfers, and root synchronization, saves both sides' metadata and CRC32 plus synchronization history to disk before reporting completion or starting the next file. Only the file about to be written is invalidated beforehand; pending files retain their history. Cancellation during a transfer still allows that completed file to be verified and checkpointed. Failed or unverified transfers are not acknowledged, and cache persistence failures stop the operation. Download hashes are calculated from the completed local copy without a second remote download. Clearing the cache preserves synchronization history, so a full verification can still identify which side changed. Cancelled previews never acknowledge differing contents. Bidirectional comparison may need remote hashes even for different-size files to identify the changed side.
 
 These comparison rules apply to synchronization previews. **WSFTP: Upload file** and `upload_on_save` upload the selected or saved file directly, without a CRC32 comparison.
 
