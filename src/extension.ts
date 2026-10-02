@@ -35,10 +35,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const autosyncIntervals = new Map<string, number>();
   let transferStatus: vscode.Disposable | undefined;
   context.subscriptions.push({dispose:disposeRegex},log, { dispose: () => transferStatus?.dispose() });
-  function showTransferStatus(direction: 'upload' | 'download', detail: string): void {
+  function showTransferStatus(uploaded: number, downloaded: number): void {
+    if (!uploaded && !downloaded) return;
     transferStatus?.dispose();
-    const label = direction === 'upload' ? 'Upload' : 'Download';
-    transferStatus = vscode.window.setStatusBarMessage(`$(check) ${label} ${detail}: successful`,5000);
+    const totals = [];
+    if (uploaded) totals.push(`${uploaded} files uploaded`);
+    if (downloaded) totals.push(`${downloaded} files downloaded`);
+    transferStatus = vscode.window.setStatusBarMessage(`WSFTP Sync: ${totals.join(', ')}`,5000);
   }
   function report(error: unknown): void {
     if (error instanceof InactiveConfig) return;
@@ -246,9 +249,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         progress.report({message:direction === 'upload' ? 'Uploading file...' : 'Downloading file...'});
         await transferFile(t,root.uri.fsPath,c,relative,direction,cache);
         writeLog(`${direction} completed: ${relative}`);
-        if (direction === 'upload') {
-          showTransferStatus(direction,relative);
-        }
+        showTransferStatus(direction === 'upload' ? 1 : 0,direction === 'download' ? 1 : 0);
         if (!automatic) void vscode.window.showInformationMessage(`WSFTP: ${direction} completed.`);
       }),!automatic);
     });
@@ -370,11 +371,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
               await overwriteDownload(t,root.uri.fsPath,c,change.relative,cache,written,check);
             } else await applySyncAction(t,root.uri.fsPath,c,{relative:change.relative,kind:direction,directory:false},snapshot,cache,check);
             completed++;
-            showTransferStatus(direction,`${completed}/${changes.length}`);
             writeLog(`${direction} completed ${completed}/${changes.length}: ${change.relative}`);
             progress.report({increment:100/changes.length,message:`${completed}/${changes.length}: ${change.relative}`});
           }
           writeLog(`Synchronization completed: ${completed} files transferred`);
+          showTransferStatus(direction === 'upload' ? completed : 0,direction === 'download' ? completed : 0);
           void vscode.window.showInformationMessage(`WSFTP: ${completed} files transferred.`);
         });
       });
@@ -427,15 +428,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           await checkConfig();
           await validateSnapshot(t,root.uri.fsPath,c,snapshot,check);
           let completed = 0;
+          let uploaded = 0, downloaded = 0;
           for (const action of pending) {
             check(); await checkConfig();
             const file = await localPath(root.uri.fsPath,action.relative);
             if (vscode.workspace.textDocuments.some(d => d.isDirty && (d.uri.fsPath === file || (action.directory && d.uri.fsPath.startsWith(file+path.sep))))) throw new UserError('An affected file has unsaved changes. Save before synchronizing.');
             await applySyncAction(t,root.uri.fsPath,c,action,snapshot,cache,check);
+            if (action.kind === 'upload') uploaded++;
+            if (action.kind === 'download') downloaded++;
             completed++;
             trace(`${action.kind}: ${action.relative}; completed ${completed}/${pending.length}`);
             progress.report({increment:100/pending.length,message:`${completed}/${pending.length}: ${action.relative}`});
           }
+          showTransferStatus(uploaded,downloaded);
           void vscode.window.showInformationMessage(`WSFTP: ${completed} operations completed; ${conflicts} conflicts skipped.`);
         });
       });

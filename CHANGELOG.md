@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.57
+
+- Show a five-second status bar confirmation with uploaded and downloaded file totals after single-file transfers, upload on save, directory/root transfers, and synchronization.
+- Report both totals for bidirectional synchronization, excluding directory operations, deletions, and skipped conflicts.
+
 ## 0.1.56
 
 - Make Download dir an explicit full-file download with overwrite, respecting exclusions and retaining local-only files.
