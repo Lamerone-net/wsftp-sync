@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.60
+
+- Make directional root synchronization propose destination-only orphan cleanup: remote orphans for upload, local orphans for download.
+- Add a scrollable tree preview with file and directory checkboxes, folder-wide selection, select all/none, and expand/collapse controls for root synchronization and dominance modes; bidirectional synchronization also supports selective transfers.
+- Execute selected transfers first, then request separate confirmation for orphan deletion. Deletions start unchecked; cancelling cleanup preserves completed transfers, and failed or cancelled transfers never start cleanup.
+- Include required parent directories for selected transfers and retain directories containing unselected or protected files. Revalidate configuration and both trees before each phase, keep unsaved-file protection, and remove directories only when empty.
+- Preserve the transfer-only behavior of Upload/Download file, root, and Explorer directory commands; Synchronize with preview uses the new directional workflow.
+
 ## 0.1.59
 
 - Show the FTP/FTPS server's reply code and message directly in connection and operation errors, including invalid remote directories, denied access, and failed transfers.

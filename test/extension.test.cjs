@@ -29,18 +29,23 @@ test('saved documents and keyboard upload command use wsftp-sync configuration; 
     const remoteFiles = new Map();
     const remoteContents = new Map();
     const vscode = {
+      ViewColumn:{Active:-1},
       debug:{activeDebugConsole:{appendLine:message => diagnostics.push(message)}},
       CancellationError: class extends Error {},
       ProgressLocation:{Notification:15},
       window: {withProgress:async (options, action) => {
         const notice = {title:options.title,messages:[],closed:false};
         progressNotices.push(notice);
-        try { return await action({report:update => notice.messages.push(update.message)},{isCancellationRequested:false}); }
+        try { return await action({report:update => notice.messages.push(update.message)},{isCancellationRequested:false,onCancellationRequested:() => ({dispose(){}})}); }
         finally { notice.closed = true; }
       },showWarningMessage:async (title,options,yes,no) => {previews.push({title,...options,yes,no});return apply ? yes : no;},createOutputChannel:name => ({appendLine:line => outputLines.push(line),replace:line => { outputReplacements.push(line); outputLines.splice(0,outputLines.length,line.trimEnd()); },show:preserveFocus => outputShows.push({name,preserveFocus}),dispose(){}}),showErrorMessage:message => {assert.ok(progressNotices.every(notice => notice.closed));errors.push(message);},showInformationMessage:(title,options) => information.push({title,...options}),activeTextEditor:{document:{uri}}},
       workspace: {textDocuments:[],isTrusted:true,workspaceFolders:[root],getWorkspaceFolder:() => root,onDidSaveTextDocument:handler => {onSave=handler;return {dispose(){}};}},
       commands: {registerCommand:(id,handler) => {commands.set(id,handler);return {dispose(){}};}}
     };
+    vscode.window.createWebviewPanel = require('./selection-harness.cjs').panelHarness(data => {
+      previews.push({title:data.title,detail:data.actions.map(a => `${a.kind.toUpperCase()}  ${a.relative}`).join('\n'),yes:{title:'Apply'},no:{title:'Cancel',isCloseAffordance:true}});
+      return apply ? (data.deletion ? [] : data.actions.map((_,index) => index)) : undefined;
+    });
     const filename = path.resolve(__dirname,'../dist/extension.js');
     vscode.window.setStatusBarMessage = (text, timeout) => {
       statuses.push({text, timeout});

@@ -23,6 +23,7 @@ test('automatic checks notify after stability, never apply actions, stop when di
     const remote = {name:'new.txt',size:3,mtime:100,directory:false,symlink:false};
     const settings = {get:(key,fallback) => key === 'autoCheck.enabled' ? enabled : 1,update:async (_,value) => {enabled=value;}};
     const vscode = {
+      ViewColumn:{Active:-1},
       CancellationError:class extends Error {},ConfigurationTarget:{WorkspaceFolder:3},StatusBarAlignment:{Left:1},ProgressLocation:{Notification:15},
       workspace:{isTrusted:true,workspaceFolders:[root],textDocuments:[],
         getConfiguration:() => settings,getWorkspaceFolder:uri => uri.fsPath.startsWith(rootPath) ? root : other,
@@ -38,11 +39,15 @@ test('automatic checks notify after stability, never apply actions, stop when di
         withProgress:async (options,fn) => {
           const notice = options.title.startsWith('WSFTP: project:') ? {message:options.title,closed:false} : undefined;
           if (notice) notifications.push(notice);
-          const result = await fn({report(){}},{isCancellationRequested:false});
+          const result = await fn({report(){}},{isCancellationRequested:false,onCancellationRequested:() => ({dispose(){}})});
           if (notice) notice.closed=true;
           return result;
         }}
     };
+    vscode.window.createWebviewPanel = require('./selection-harness.cjs').panelHarness(data => {
+      prompts.push({message:data.title,options:{detail:data.actions.map(a => `${a.kind.toUpperCase()}  ${a.relative}`).join('\n')}});
+      return undefined;
+    });
     const filename = path.resolve(__dirname,'../dist/extension.js'); const realRequire = createRequire(filename);
     const exports = {};
     vm.runInNewContext(await fs.readFile(filename,'utf8'),{exports,setTimeout:(fn,ms) => {const id={};timers.set(id,{fn,ms});return id;},clearTimeout:id => timers.delete(id),Date:class extends Date {static now(){return now;}},require:id => {

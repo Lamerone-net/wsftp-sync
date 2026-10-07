@@ -13,6 +13,7 @@ import { findConfig, readConfig, applyDiscovery, ensureConfig, InactiveConfig } 
 import { connect, Transport, inspectRemote, TLSIdentity, TLSNotTrusted } from './transport';
 import { localPath, scanLocal, scanRemote, planSync } from './files';
 import { showSyncPreview } from './preview';
+import { chooseSyncActions } from './selection';
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const log = vscode.window.createOutputChannel('WSFTP Sync');
@@ -299,7 +300,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   command('wsftp.downloadDir',(uri?: vscode.Uri) => synchronize('download',uri,true));
   command('wsftp.sync',async () => {
     const direction = await vscode.window.showQuickPick(['upload','download'],{title:'WSFTP: synchronization direction'});
-    if (direction) await synchronize(direction as 'upload' | 'download');
+    if (direction) await synchronizeMode(direction === 'upload' ? 'local' : 'remote',undefined,true);
   });
   async function synchronize(direction: 'upload' | 'download', uri?: vscode.Uri, directory = false): Promise<void> {
     const overwrite = direction === 'download' && directory;
@@ -380,14 +381,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       });
     });
   }
-  async function synchronizeMode(mode: SyncMode, selectedRoot?: vscode.WorkspaceFolder, transferOnly = false): Promise<void> {
+  async function synchronizeMode(mode: SyncMode, selectedRoot?: vscode.WorkspaceFolder, rootSync = false): Promise<void> {
     const target = vscode.window.activeTextEditor?.document.uri;
     const root = selectedRoot ?? (target && vscode.workspace.getWorkspaceFolder(target)) ?? vscode.workspace.workspaceFolders?.[0];
     if (!root) throw new UserError('Open a workspace folder.');
     await run(root,async () => {
       const original = await config(root);
       const c = rulesForMode(original,mode);
-      const label = transferOnly ? (mode === 'local' ? 'Root upload' : 'Root download') : mode === 'local' ? 'Local dominance' : mode === 'remote' ? 'Remote dominance' : 'Bidirectional';
+      const label = rootSync ? (mode === 'local' ? 'Root upload' : 'Root download') : mode === 'local' ? 'Local dominance' : mode === 'remote' ? 'Remote dominance' : 'Bidirectional';
       await session(root,c,async (t,trace) => {
         await vscode.window.withProgress({location:vscode.ProgressLocation.Notification,title:`WSFTP: ${label}`,cancellable:true},async (progress,token) => {
           const check = () => { if (token.isCancellationRequested) throw new vscode.CancellationError(); };
@@ -402,7 +403,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           const snapshot = await scanTrees(t,root.uri.fsPath,c,check);
           cache.prune(snapshot.local,snapshot.remote,c,'');
           progress.report({message:cache.needsInitialization ? 'Creating the local cache. This may take a few minutes.' : 'Comparing files and synchronization history...'});
-          const actions = (await buildSyncPlan(t,root.uri.fsPath,c,mode,snapshot,cache,check,initializing ? trace : undefined)).filter(action => !transferOnly || !action.kind.startsWith('delete-'));
+          const actions = await buildSyncPlan(t,root.uri.fsPath,c,mode,snapshot,cache,check,initializing ? trace : undefined);
           await cache.save();
           if (initializing) trace('Local cache created. File comparison completed.');
           const pending = actions.filter(a => a.kind !== 'conflict');
@@ -417,30 +418,43 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             await showSyncPreview(vscode,`WSFTP: ${conflicts} conflicts; no files changed.`,entries,'Resolve the conflicting files manually or use a dominance preview to choose a side.',false);
             return;
           }
-          const accepted = await showSyncPreview(vscode,`WSFTP: ${label} ? ${pending.length} operations, ${deletions} deletions, ${conflicts} conflicts`,
-            entries,`Apply executes the listed copies and directory operations, including ${deletions} deletions. Existing destination files may be overwritten. Conflicts are skipped. Deletions cannot be undone by this extension.`);
-          check();
-          if (!accepted) { trace('Preview cancelled; no operations applied.'); return; }
           const checkConfig = async () => {
             if (JSON.stringify(await config(root)) !== JSON.stringify(original)) throw new UserError('Configuration changed after preview. Run synchronization again.');
           };
-          await checkConfig();
-          await validateSnapshot(t,root.uri.fsPath,c,snapshot,check);
           let completed = 0;
           let uploaded = 0, downloaded = 0;
-          for (const action of pending) {
+          let deleted = 0;
+          for (const deletion of [false,true]) {
+            const candidates = pending.filter(action => action.kind.startsWith('delete-') === deletion);
+            if (!candidates.length) continue;
             check(); await checkConfig();
-            const file = await localPath(root.uri.fsPath,action.relative);
-            if (vscode.workspace.textDocuments.some(d => d.isDirty && (d.uri.fsPath === file || (action.directory && d.uri.fsPath.startsWith(file+path.sep))))) throw new UserError('An affected file has unsaved changes. Save before synchronizing.');
-            await applySyncAction(t,root.uri.fsPath,c,action,snapshot,cache,check);
-            if (action.kind === 'upload') uploaded++;
-            if (action.kind === 'download') downloaded++;
-            completed++;
-            trace(`${action.kind}: ${action.relative}; completed ${completed}/${pending.length}`);
-            progress.report({increment:100/pending.length,message:`${completed}/${pending.length}: ${action.relative}`});
+            const selected = await chooseSyncActions(vscode,
+              `WSFTP: ${label} - ${deletion ? '2. Delete orphans' : '1. Transfer files'} - ${root.name}`,
+              candidates,snapshot,token,deletion,actions.filter(action => action.kind === 'conflict'));
+            check();
+            if (!selected) {
+              trace(deletion ? 'Orphan deletion cancelled; completed transfers remain applied.' : 'Preview cancelled; no operations applied.');
+              if (!deletion) return;
+              break;
+            }
+            if (!selected.length) continue;
+            await checkConfig();
+            await validateSnapshot(t,root.uri.fsPath,c,snapshot,check);
+            for (const action of selected) {
+              check(); await checkConfig();
+              const file = await localPath(root.uri.fsPath,action.relative);
+              if (vscode.workspace.textDocuments.some(d => d.isDirty && (d.uri.fsPath === file || (action.directory && d.uri.fsPath.startsWith(file+path.sep))))) throw new UserError('An affected file has unsaved changes. Save before synchronizing.');
+              await applySyncAction(t,root.uri.fsPath,c,action,snapshot,cache,check);
+              if (action.kind === 'upload') uploaded++;
+              if (action.kind === 'download') downloaded++;
+              if (deletion) deleted++;
+              completed++;
+              trace(`${action.kind}: ${action.relative}; completed ${completed} operations`);
+              progress.report({message:`${completed} operations completed: ${action.relative}`});
+            }
+            if (!deletion) showTransferStatus(uploaded,downloaded);
           }
-          showTransferStatus(uploaded,downloaded);
-          void vscode.window.showInformationMessage(`WSFTP: ${completed} operations completed; ${conflicts} conflicts skipped.`);
+          void vscode.window.showInformationMessage(`WSFTP: ${uploaded} files uploaded, ${downloaded} files downloaded, ${deleted} orphans deleted; ${conflicts} conflicts skipped.`);
         });
       });
     });
