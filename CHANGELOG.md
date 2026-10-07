@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.59
+
+- Show the FTP/FTPS server's reply code and message directly in connection and operation errors, including invalid remote directories, denied access, and failed transfers.
+- Include FTP/FTPS server replies when protocol discovery fails, while redacting configured credentials and session secrets.
+
+## 0.1.58
+
+- Keep synchronization confirmation dialogs compact by limiting the displayed entries and path lengths, including conflict-only previews.
+- Add Show full preview to open the complete ordered plan in a scrollable, searchable text editor, with a non-modal Apply/Cancel confirmation that keeps the preview accessible.
+- Preserve explicit confirmation, full operation counts, overwrite/deletion warnings, and all planned transfers when the dialog preview is shortened.
+
 ## 0.1.57
 
 - Show a five-second status bar confirmation with uploaded and downloaded file totals after single-file transfers, upload on save, directory/root transfers, and synchronization.

@@ -124,10 +124,19 @@ test('saved documents and keyboard upload command use wsftp-sync configuration; 
     await commands.get('wsftp.syncUploadRoot')();
     assert.match(errors.pop(), /^WSFTP: Host not found\./);
     connectionFailure = undefined;
-    listFailure = new Error('550 Permission denied');
+    listFailure = Object.assign(new Error('550 /wrong-directory: No such file or directory; credential test'),{code:550});
     closeFailure = new Error('Disconnect failed');
-    await commands.get('wsftp.syncUploadRoot')();
-    assert.match(errors.pop(), /^WSFTP: Cannot get files list\./);
+    const originalConfig = await fs.readFile(configPath,'utf8');
+    for (const debug of [true,false]) {
+      await fs.writeFile(configPath,JSON.stringify({...JSON.parse(originalConfig),debug}));
+      await commands.get('wsftp.syncUploadRoot')();
+      const message = errors.pop();
+      assert.match(message, /^WSFTP: Cannot get files list\. FTP server: 550 \/wrong-directory: No such file or directory/);
+      assert.match(message,/credential \[REDACTED\]/);
+      assert.ok(!message.includes('credential test'));
+      assert.ok(outputLines.some(line => line.includes('FTP server: 550 /wrong-directory')));
+    }
+    await fs.writeFile(configPath,originalConfig);
     listFailure = undefined;
     uploadFailure = new Error('Disk full');
     await commands.get('wsftp.upload')(uri);

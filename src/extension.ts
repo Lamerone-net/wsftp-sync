@@ -12,6 +12,7 @@ import { discoverProtocol } from './discovery';
 import { findConfig, readConfig, applyDiscovery, ensureConfig, InactiveConfig } from './config';
 import { connect, Transport, inspectRemote, TLSIdentity, TLSNotTrusted } from './transport';
 import { localPath, scanLocal, scanRemote, planSync } from './files';
+import { showSyncPreview } from './preview';
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const log = vscode.window.createOutputChannel('WSFTP Sync');
@@ -189,7 +190,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       catch (error) {
         trace(`${label}: ERROR - ${error instanceof Error ? error.message : String(error)}`);
         if (error instanceof vscode.CancellationError) throw error;
-        throw stage ? operationError(stage,error) : error;
+        throw stage ? operationError(stage,error,[secret,c.password,c.passphrase]) : error;
       }
     }
     const connected = await operation(`Connection; user=${c.username}; remote directory=${c.remote_path}; timeout=${c.timeout} ms`, () => connect(c,secret,async hash => {
@@ -340,14 +341,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           for (const relative of (direction === 'upload' ? local : remote).keys()) writeLog(`${relative}: ${changed.has(relative) ? (changed.get(relative) === 'new' ? 'new' : 'modified') : 'synchronized'}`);
           check();
           if (!changes.length) { void vscode.window.showInformationMessage('WSFTP: no files to transfer: files are synchronized.'); return; }
-          const apply = {title:'Apply'};
-          const cancel = {title:'Cancel',isCloseAffordance:true};
-          const detail = changes.map(change => `${overwrite ? 'DOWNLOAD' : change.reason === 'new' ? 'NEW' : 'MODIFIED'}  ${change.relative}`).join('\n');
-          const answer = await vscode.window.showWarningMessage(
-            `WSFTP: ${direction} - ${scope || 'root'} - ${changes.length} files`,
-            {modal:true,detail:`${detail}\n\n${overwrite ? 'Apply downloads every listed file and overwrites existing files, in the displayed order. If multiple remote names refer to the same local file, the last listed copy wins. Exclusions are respected; no files are deleted.' : 'Apply transfers all listed files and overwrites existing files. Comparison uses size and cached CRC32; no files are deleted.'}`},apply,cancel);
+          const entries = changes.map(change => `${overwrite ? 'DOWNLOAD' : change.reason === 'new' ? 'NEW' : 'MODIFIED'}  ${change.relative}`);
+          const accepted = await showSyncPreview(vscode,
+            `WSFTP: ${direction} - ${changes.length} files - ${scope || 'root'}`,
+            entries,overwrite ? 'Apply downloads every listed file and overwrites existing files, in the displayed order. If multiple remote names refer to the same local file, the last listed copy wins. Exclusions are respected; no files are deleted.' : 'Apply transfers all listed files and overwrites existing files. Comparison uses size and cached CRC32; no files are deleted.');
           check();
-          if (answer !== apply) { writeLog('Synchronization cancelled in preview; no files transferred.'); return; }
+          if (!accepted) { writeLog('Synchronization cancelled in preview; no files transferred.'); return; }
           const snapshot: Snapshot = {
             local:new Map([...local].map(([relative,entry]) => [relative,{...entry,directory:false}])),
             remote:new Map([...remote].map(([relative,entry]) => [relative,{...entry,directory:false}]))
@@ -409,19 +408,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           const pending = actions.filter(a => a.kind !== 'conflict');
           const conflicts = actions.length-pending.length;
           const deletions = pending.filter(a => a.kind.startsWith('delete-')).length;
-          const detail = actions.map(a => `${a.kind.toUpperCase()}  ${a.relative}${a.directory ? '/' : ''}${a.note && a.kind === 'conflict' ? ' ? '+a.note : ''}`).join('\n');
+          const entries = actions.map(a => `${a.kind.toUpperCase()}  ${a.relative}${a.directory ? '/' : ''}${a.note && a.kind === 'conflict' ? ' ? '+a.note : ''}`);
+          const detail = entries.join('\n');
           trace(`${label}: ${pending.length} operations, ${deletions} deletions, ${conflicts} conflicts.\n${detail}`);
           check();
           if (!actions.length) { void vscode.window.showInformationMessage('WSFTP: no operations needed.'); return; }
           if (!pending.length) {
-            await vscode.window.showWarningMessage(`WSFTP: ${conflicts} conflicts; no files changed.`,{modal:true,detail:`${detail}\n\nResolve the conflicting files manually or use a dominance preview to choose a side.`},'OK');
+            await showSyncPreview(vscode,`WSFTP: ${conflicts} conflicts; no files changed.`,entries,'Resolve the conflicting files manually or use a dominance preview to choose a side.',false);
             return;
           }
-          const apply = {title:'Apply'}, cancel = {title:'Cancel',isCloseAffordance:true};
-          const answer = await vscode.window.showWarningMessage(`WSFTP: ${label} ? ${pending.length} operations, ${deletions} deletions, ${conflicts} conflicts`,
-            {modal:true,detail:`${detail}\n\nApply executes the listed copies and directory operations, including ${deletions} deletions. Existing destination files may be overwritten. Conflicts are skipped. Deletions cannot be undone by this extension.`},apply,cancel);
+          const accepted = await showSyncPreview(vscode,`WSFTP: ${label} ? ${pending.length} operations, ${deletions} deletions, ${conflicts} conflicts`,
+            entries,`Apply executes the listed copies and directory operations, including ${deletions} deletions. Existing destination files may be overwritten. Conflicts are skipped. Deletions cannot be undone by this extension.`);
           check();
-          if (answer !== apply) { trace('Preview cancelled; no operations applied.'); return; }
+          if (!accepted) { trace('Preview cancelled; no operations applied.'); return; }
           const checkConfig = async () => {
             if (JSON.stringify(await config(root)) !== JSON.stringify(original)) throw new UserError('Configuration changed after preview. Run synchronization again.');
           };

@@ -13,6 +13,15 @@ const extensionRoot = process.env.WSFTP_TEST_EXTENSION || path.join(__dirname,'.
 const { connect } = require(path.join(extensionRoot,'dist/transport'));
 const { parseConfig } = require(path.join(extensionRoot,'dist/core'));
 const { remoteCRC32, crc32File } = require(path.join(extensionRoot,'dist/checksum'));
+const { operationError } = require(path.join(extensionRoot,'dist/errors'));
+
+function assertDirectoryReply(error) {
+  assert.ok(error.code >= 400 && error.code < 600);
+  const diagnostic = operationError('list',error).message;
+  assert.ok(diagnostic.includes('FTP server: '));
+  assert.ok(diagnostic.includes(error.message.trim()),diagnostic);
+  return true;
+}
 
 test('FTP and explicit FTPS round trips; untrusted TLS certificate rejected', {timeout:30000}, async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(),'wsftp-ftp-'));
@@ -30,6 +39,7 @@ test('FTP and explicit FTPS round trips; untrusted TLS certificate rejected', {t
     const diagnostics = [];
     const t = await connect({...c,debug:true},'test',async () => true,message => diagnostics.push(message));
     try {
+      await assert.rejects(t.list('/missing-directory'),assertDirectoryReply);
       await t.upload(input,'/nested/remote.txt');
       assert.ok((await t.list('/nested')).some(e => e.name === 'remote.txt' && e.size === 17));
       await t.download('/nested/remote.txt',path.join(root,'output.txt'));
@@ -71,6 +81,7 @@ test('FTP and explicit FTPS round trips; untrusted TLS certificate rejected', {t
         return true;
       });
       try {
+        await assert.rejects(trusted.list('/missing-directory'),assertDirectoryReply);
         await trusted.upload(input,'/trusted/file.txt');
         assert.ok((await trusted.list('/trusted')).some(entry => entry.name === 'file.txt'));
         await trusted.download('/trusted/file.txt',path.join(root,'trusted-output.txt'));
@@ -91,6 +102,7 @@ test('FTP and explicit FTPS round trips; untrusted TLS certificate rejected', {t
       const activeLogs = [];
       const active = await connect({...c,protocol,passive:false,debug:true,rejectUnauthorized:false},'test',async () => true,line => activeLogs.push(line));
       try {
+        await assert.rejects(active.list('/missing-directory'),assertDirectoryReply);
         await active.upload(input,`/active-${protocol}/file.txt`);
         assert.ok((await active.list(`/active-${protocol}`)).some(entry => entry.name === 'file.txt' && entry.size === 17));
         const destination = path.join(root,`active-${protocol}-output.txt`);

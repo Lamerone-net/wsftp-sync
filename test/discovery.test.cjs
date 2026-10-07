@@ -82,3 +82,22 @@ test('TLS certificate rejection stops discovery without plaintext fallback', asy
   }),/Certificate rejected/);
   assert.deepEqual(attempts,['sftp','ftps']);
 });
+
+test('failed discovery reports FTP and FTPS directory replies with secrets redacted', async () => {
+  const { FTPError } = require('basic-ftp');
+  await assert.rejects(discoverProtocol(config(),'session-password',async () => true,async () => true,() => {},() => {},async c => {
+    if (c.protocol === 'sftp') throw new Error('Not SSH');
+    return {
+      list:async () => { throw new FTPError({code:550,message:'550 /wrong-directory: Permission denied; session-password secret'}); },
+      close:async () => {}
+    };
+  }),error => {
+    for (const protocol of ['FTP','FTPS']) {
+      for (const passive of [true,false]) assert.ok(error.message.includes(`${protocol} passive=${passive}: 550 /wrong-directory: Permission denied`));
+    }
+    assert.ok(!error.message.includes('session-password'));
+    assert.ok(!error.message.includes('secret'));
+    assert.match(error.message,/\[REDACTED\]/);
+    return true;
+  });
+});
