@@ -6,7 +6,7 @@ import { Config, Change, excluded, safeRelative, UserError, forDirection } from 
 import { operationError, OperationStage } from './errors';
 import { SyncCache } from './cache';
 import { ChangeMonitor, CheckLoop } from './monitor';
-import { SyncMode, Snapshot, rulesForMode, scanTrees, buildSyncPlan, validateSnapshot, applySyncAction, transferFile, overwriteDownload } from './sync';
+import { SyncMode, Snapshot, rulesForMode, scanTrees, buildSyncPlan, validateSnapshot, applySyncAction, transferFile, overwriteDownload, orderTransferActions } from './sync';
 import { disposeRegex } from './ignore';
 import { discoverProtocol } from './discovery';
 import { findConfig, readConfig, applyDiscovery, ensureConfig, InactiveConfig } from './config';
@@ -428,6 +428,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             const candidates = pending.filter(action => action.kind.startsWith('delete-') === deletion);
             if (!candidates.length) continue;
             check(); await checkConfig();
+            progress.report({message:deletion ? 'Waiting for orphan deletion selection...' : 'Waiting for transfer selection...'});
             const selected = await chooseSyncActions(vscode,
               `WSFTP: ${label} - ${deletion ? '2. Delete orphans' : '1. Transfer files'} - ${root.name}`,
               candidates,snapshot,token,deletion,actions.filter(action => action.kind === 'conflict'));
@@ -438,9 +439,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
               break;
             }
             if (!selected.length) continue;
+            progress.report({message:deletion ? 'Checking for changes before deletion...' : 'Starting selected transfers...'});
             await checkConfig();
-            await validateSnapshot(t,root.uri.fsPath,c,snapshot,check);
-            for (const action of selected) {
+            if (deletion) await validateSnapshot(t,root.uri.fsPath,c,snapshot,check,message => progress.report({message:`Checking before deletion: ${message}`}));
+            const execution = deletion ? selected : orderTransferActions(selected);
+            let phaseCompleted = 0;
+            for (const action of execution) {
+              const operation = action.kind === 'upload' ? 'Uploading' : action.kind === 'download' ? 'Downloading'
+                : action.kind === 'mkdir-local' ? 'Creating local directory' : action.kind === 'mkdir-remote' ? 'Creating remote directory'
+                : action.kind === 'delete-local' ? 'Deleting local orphan' : 'Deleting remote orphan';
+              progress.report({message:`${operation} ${phaseCompleted+1}/${execution.length}: ${action.relative}`});
               check(); await checkConfig();
               const file = await localPath(root.uri.fsPath,action.relative);
               if (vscode.workspace.textDocuments.some(d => d.isDirty && (d.uri.fsPath === file || (action.directory && d.uri.fsPath.startsWith(file+path.sep))))) throw new UserError('An affected file has unsaved changes. Save before synchronizing.');
@@ -449,6 +457,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
               if (action.kind === 'download') downloaded++;
               if (deletion) deleted++;
               completed++;
+              phaseCompleted++;
               trace(`${action.kind}: ${action.relative}; completed ${completed} operations`);
               progress.report({message:`${completed} operations completed: ${action.relative}`});
             }

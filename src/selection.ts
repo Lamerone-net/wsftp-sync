@@ -36,15 +36,15 @@ export function selectionHtml(title: string, actions: SyncAction[], deletion: bo
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}';">
 <style nonce="${nonce}">
-*{box-sizing:border-box}body{margin:0;font-family:var(--vscode-font-family);color:var(--vscode-foreground);background:var(--vscode-editor-background)}
-main{height:100vh;display:flex;flex-direction:column;padding:16px;gap:12px}h1{font-size:20px;margin:0}p{margin:0;line-height:1.5}
-header,footer{flex:none}header{display:grid;gap:8px}.toolbar,footer{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-button{padding:7px 12px;border:1px solid var(--vscode-button-border,transparent);background:var(--vscode-button-secondaryBackground);color:var(--vscode-button-secondaryForeground);cursor:pointer}
+*{box-sizing:border-box}body{margin:0;font-family:var(--vscode-font-family);font-size:12px;line-height:1.35;color:var(--vscode-foreground);background:var(--vscode-editor-background)}
+main{height:100vh;display:flex;flex-direction:column;padding:10px;gap:8px}h1{font-size:16px;margin:0}p{margin:0;line-height:1.35}
+header,footer{flex:none}header{display:grid;gap:6px}.toolbar,footer{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+button{font:inherit;padding:3px 8px;min-height:24px;border:1px solid var(--vscode-button-border,transparent);background:var(--vscode-button-secondaryBackground);color:var(--vscode-button-secondaryForeground);cursor:pointer}
 button.primary{background:var(--vscode-button-background);color:var(--vscode-button-foreground)}button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid var(--vscode-focusBorder)}
-#tree{flex:1;min-height:0;overflow:auto;border:1px solid var(--vscode-panel-border);padding:8px}label,summary{min-height:30px;display:flex;gap:8px;align-items:flex-start;padding:4px}summary{cursor:pointer}details>div{padding-left:20px}
-input{flex:none}label span,summary span{overflow-wrap:anywhere}small{color:var(--vscode-descriptionForeground)}#count{margin-right:auto}#conflicts{max-height:90px;overflow:auto;white-space:pre-wrap}footer{border-top:1px solid var(--vscode-panel-border);padding-top:12px}
+#tree{flex:1;min-height:0;overflow:auto;border:1px solid var(--vscode-panel-border);padding:4px}label,summary{min-height:22px;display:flex;gap:6px;align-items:flex-start;padding:2px}summary{cursor:pointer}details>div{padding-left:16px}
+input{flex:none;width:13px;height:13px;margin:1px 0}label span,summary span{overflow-wrap:anywhere}small{font-size:11px;color:var(--vscode-descriptionForeground)}#count{margin-right:auto}#conflicts{max-height:90px;overflow:auto;white-space:pre-wrap}footer{border-top:1px solid var(--vscode-panel-border);padding-top:8px}
 </style></head><body><main><header><h1 id="title"></h1><p id="warning"></p><p id="help"></p><small id="conflicts"></small>
-<div class="toolbar"><button id="all">Select all</button><button id="none">Select none</button><button id="expand">Expand all</button><button id="collapse">Collapse all</button></div></header>
+<div class="toolbar"><button id="all">Select all</button><button id="none">Select none</button><button id="expand">Expand all</button><button id="collapse">Collapse all</button><button id="copy" title="Copy all operations, including selection status and skipped conflicts">Copy list to clipboard</button></div></header>
 <section id="tree" aria-label="Files and directories"></section><footer><span id="count" role="status" aria-live="polite"></span><button id="cancel">Cancel</button><button class="primary" id="apply"></button></footer></main>
 <script nonce="${nonce}">
 const data=${data};
@@ -62,12 +62,13 @@ function render(node,parent,prefix){for(const child of node.children.values()){c
 render(root,document.getElementById('tree'),'');update();
 document.getElementById('all').onclick=()=>{data.actions.forEach((_,i)=>chosen.add(i));update();};document.getElementById('none').onclick=()=>{chosen.clear();update();};
 document.getElementById('expand').onclick=()=>document.querySelectorAll('details').forEach(d=>d.open=true);document.getElementById('collapse').onclick=()=>document.querySelectorAll('details').forEach(d=>d.open=false);
+document.getElementById('copy').onclick=()=>vscode.postMessage({type:'copy',indices:[...chosen]});
 document.getElementById('cancel').onclick=()=>vscode.postMessage({type:'cancel'});
 document.getElementById('apply').onclick=()=>{document.querySelectorAll('button,input').forEach(element=>element.disabled=true);vscode.postMessage({type:'apply',indices:[...chosen]});};
 </script></body></html>`;
 }
 
-export async function chooseSyncActions(ui: Pick<typeof vscode,'window' | 'ViewColumn'>, title: string, actions: SyncAction[], snapshot: Snapshot, token: vscode.CancellationToken, deletion = false, conflicts: SyncAction[] = []): Promise<SyncAction[] | undefined> {
+export async function chooseSyncActions(ui: Pick<typeof vscode,'window' | 'ViewColumn' | 'env'>, title: string, actions: SyncAction[], snapshot: Snapshot, token: vscode.CancellationToken, deletion = false, conflicts: SyncAction[] = []): Promise<SyncAction[] | undefined> {
   if (token.isCancellationRequested) return undefined;
   const panel = ui.window.createWebviewPanel('wsftp.selection',title,ui.ViewColumn.Active,{enableScripts:true,localResourceRoots:[],retainContextWhenHidden:true,enableFindWidget:true});
   return new Promise(resolve => {
@@ -81,8 +82,19 @@ export async function chooseSyncActions(ui: Pick<typeof vscode,'window' | 'ViewC
       resolve(result);
     };
     subscriptions.push(panel.onDidDispose(() => finish(undefined)),token.onCancellationRequested(() => finish(undefined)),
-      panel.webview.onDidReceiveMessage(message => {
-        if (message?.type === 'cancel') finish(undefined);
+      panel.webview.onDidReceiveMessage(async message => {
+        if (message?.type === 'copy' && Array.isArray(message.indices) && message.indices.every((index: unknown) => Number.isInteger(index) && Number(index) >= 0 && Number(index) < actions.length)) {
+          const chosen = new Set<number>(message.indices);
+          const lines = actions.map((action,index) => `${chosen.has(index) ? '[x]' : '[ ]'} ${action.kind.toUpperCase()}  ${action.relative}${action.directory ? '/' : ''}`);
+          lines.push(...conflicts.map(action => `[!] CONFLICT  ${action.relative} - ${action.note || 'Conflict'}`));
+          try {
+            await ui.env.clipboard.writeText([title,'',...lines].join('\n'));
+            void ui.window.showInformationMessage('WSFTP: List copied to clipboard.');
+          } catch {
+            void ui.window.showErrorMessage('WSFTP: Could not copy the list to clipboard.');
+          }
+        }
+        else if (message?.type === 'cancel') finish(undefined);
         else if (message?.type === 'apply' && Array.isArray(message.indices) && message.indices.every((index: unknown) => Number.isInteger(index) && Number(index) >= 0 && Number(index) < actions.length)) {
           finish(token.isCancellationRequested ? undefined : selectedActions(actions,message.indices,snapshot));
         }

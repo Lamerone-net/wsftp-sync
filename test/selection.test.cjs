@@ -59,3 +59,23 @@ test('folder checkboxes select descendants, mixed states update, and deletion st
     assert.equal(folderCheck.indeterminate,false);
   }
 });
+
+test('copy exports the complete list without applying or closing the preview',async()=>{
+  let receive,close;
+  const copied=[], notices=[];
+  const panel={dispose(){close?.();},onDidDispose(fn){close=fn;return {dispose(){close=undefined;}};},webview:{onDidReceiveMessage(fn){receive=fn;return {dispose(){}};}}};
+  const ui={ViewColumn:{Active:-1},env:{clipboard:{async writeText(text){copied.push(text);}}},window:{createWebviewPanel:()=>panel,showInformationMessage:text=>notices.push(text),showErrorMessage:text=>notices.push(text)}};
+  const token={isCancellationRequested:false,onCancellationRequested(){return {dispose(){}};}};
+  const actions=[{relative:'folder',kind:'mkdir-local',directory:true},{relative:'folder/file.txt',kind:'download',directory:false}];
+  let settled=false;
+  const result=chooseSyncActions(ui,'Review',actions,{local:new Map(),remote:new Map()},token,false,[{relative:'conflict.txt',kind:'conflict',note:'Both changed'}]).then(value=>{settled=true;return value;});
+  await receive({type:'copy',indices:[1]});
+  assert.equal(copied[0],'Review\n\n[ ] MKDIR-LOCAL  folder/\n[x] DOWNLOAD  folder/file.txt\n[!] CONFLICT  conflict.txt - Both changed');
+  assert.equal(settled,false);
+  ui.env.clipboard.writeText=async()=>{throw Error('Unavailable');};
+  await receive({type:'copy',indices:[]});
+  assert.match(notices[1],/Could not copy/);
+  assert.equal(settled,false);
+  await receive({type:'cancel'});
+  assert.equal(await result,undefined);
+});

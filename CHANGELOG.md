@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.62
+
+- Add Copy list to clipboard to synchronization selection previews, including all operation paths, selection states, and skipped conflicts.
+- Compact the selection preview with smaller text, buttons, tree rows, indentation, and spacing.
+
+## 0.1.61
+
+- Start selected synchronization transfers without repeating the full local/remote tree scan after confirmation; retain source and destination checks immediately before each operation.
+- Create the parent directories needed by each file just before its transfer, deferring unrelated empty directories so the first copy does not wait for all directory creation.
+- Replace stale comparison progress with selection, startup, and current upload/download/directory operation messages before work starts.
+- Keep orphan deletion as a separate final phase, with visible directory-by-directory progress during the full pre-deletion validation.
+
 ## 0.1.60
 
 - Make directional root synchronization propose destination-only orphan cleanup: remote orphans for upload, local orphans for download.

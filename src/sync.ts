@@ -19,15 +19,38 @@ export interface SyncAction {
 }
 export interface Snapshot { local: Tree; remote: Tree }
 
+// Create only each copy's required parents before it; defer unrelated empty directories.
+export function orderTransferActions(actions: SyncAction[]): SyncAction[] {
+  const directories = new Map(actions.filter(action => action.kind.startsWith('mkdir-')).map(action => [`${action.kind}:${action.relative}`,action]));
+  const ordered: SyncAction[] = [];
+  const added = new Set<SyncAction>();
+  const add = (action: SyncAction) => {
+    if (!added.has(action)) { added.add(action); ordered.push(action); }
+  };
+  for (const action of actions) {
+    if (action.kind !== 'upload' && action.kind !== 'download') continue;
+    const kind = action.kind === 'upload' ? 'mkdir-remote' : 'mkdir-local';
+    const parts = action.relative.split('/');
+    for (let i = 1; i < parts.length; i++) {
+      const parent = directories.get(`${kind}:${parts.slice(0,i).join('/')}`);
+      if (parent) add(parent);
+    }
+    add(action);
+  }
+  for (const action of actions) add(action);
+  return ordered;
+}
+
 export function rulesForMode(c: Config, mode: SyncMode): Config {
   return mode === 'both' ? c : forDirection(c,mode === 'local' ? 'upload' : 'download');
 }
 
 // Blocked entries remain visible only as protection markers, never as actions.
-export async function scanTrees(t: Transport, root: string, c: Config, check: () => void): Promise<Snapshot> {
+export async function scanTrees(t: Transport, root: string, c: Config, check: () => void, progress?: (message: string) => void): Promise<Snapshot> {
   const local: Tree = new Map(), remote: Tree = new Map();
   async function walkLocal(dir: string, prefix: string): Promise<void> {
     check();
+    progress?.(`Scanning local directory: ${prefix || '/'}`);
     for (const e of await fs.readdir(dir,{withFileTypes:true})) {
       check();
       const relative = prefix+e.name;
@@ -43,6 +66,7 @@ export async function scanTrees(t: Transport, root: string, c: Config, check: ()
   async function walkRemote(dir: string, prefix: string, depth: number): Promise<void> {
     check();
     if (depth > 64) throw new UserError('Remote directory tree is too deep.');
+    progress?.(`Scanning remote directory: ${prefix || '/'}`);
     for (const e of await t.list(dir)) {
       check();
       if (e.name === '.' || e.name === '..') continue;
@@ -190,8 +214,8 @@ export async function buildSyncPlan(t: Transport, root: string, c: Config, mode:
   });
 }
 
-export async function validateSnapshot(t: Transport, root: string, c: Config, snapshot: Snapshot, check: () => void): Promise<void> {
-  const now = await scanTrees(t,root,c,check);
+export async function validateSnapshot(t: Transport, root: string, c: Config, snapshot: Snapshot, check: () => void, progress?: (message: string) => void): Promise<void> {
+  const now = await scanTrees(t,root,c,check,progress);
   for (const side of ['local','remote'] as const) {
     for (const relative of new Set([...snapshot[side].keys(),...now[side].keys()])) {
       if (!same(snapshot[side].get(relative),now[side].get(relative))) {
